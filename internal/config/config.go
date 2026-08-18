@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -214,7 +215,7 @@ func (c *Config) NodeNames() []string {
 	for k := range c.Nodes {
 		out = append(out, k)
 	}
-	sortStrings(out)
+	sort.Strings(out)
 	return out
 }
 
@@ -239,14 +240,6 @@ func (c *Config) NodeByIP(ip string) string {
 // SecretPath resolves a file inside the node-local secrets dir.
 func (c *Config) SecretPath(name string) string {
 	return filepath.Join(c.Cluster.SecretsDir, name)
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }
 
 // Marshal renders the config back to YAML, for `config discover`.

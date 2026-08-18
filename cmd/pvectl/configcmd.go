@@ -160,6 +160,19 @@ Existing values for those are carried over from the current config.`),
 				fmt.Fprintf(os.Stderr, "\n(not written; re-run with --write to replace %s)\n", g.configPath)
 				return nil
 			}
+			// Every command loads this file and refuses to run if it is
+			// invalid -- including this one. Writing an invalid config would
+			// leave no way to regenerate it but a hand edit.
+			if errs := out.Validate(); len(errs) > 0 {
+				for _, e := range errs {
+					fmt.Fprintf(os.Stderr, "  [FAIL] %v\n", e)
+				}
+				return fmt.Errorf("refusing to write %s: the generated config is invalid (%d problem(s)); fix the live cluster or edit the file by hand",
+					g.configPath, len(errs))
+			}
+			if err := backupConfig(g.configPath); err != nil {
+				return err
+			}
 			if err := os.WriteFile(g.configPath, b, 0o640); err != nil {
 				return fmt.Errorf("write %s: %w", g.configPath, err)
 			}
@@ -169,6 +182,25 @@ Existing values for those are carried over from the current config.`),
 	}
 	c.Flags().BoolVar(&write, "write", false, "overwrite the config file instead of printing it")
 	return c
+}
+
+// backupConfig keeps the previous file next to the new one. The generator
+// cannot reproduce hand-written comments or the fields it has no way to know,
+// so the old copy is the only route back.
+func backupConfig(path string) error {
+	old, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read %s before overwriting: %w", path, err)
+	}
+	bak := path + ".bak"
+	if err := os.WriteFile(bak, old, 0o640); err != nil {
+		return fmt.Errorf("write backup %s: %w", bak, err)
+	}
+	fmt.Printf("previous config saved to %s\n", bak)
+	return nil
 }
 
 func discover(ctx context.Context, e *plan.Env) (*config.Config, error) {

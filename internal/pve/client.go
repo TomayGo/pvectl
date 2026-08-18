@@ -153,6 +153,28 @@ func retryableStatus(code int) bool {
 		code == http.StatusServiceUnavailable || code == http.StatusGatewayTimeout
 }
 
+// retrySafe reports whether the same request may be sent to another endpoint.
+//
+// A GET can always be repeated. A POST or PUT can only be repeated when we know
+// it was never delivered: a dial failure, or pveproxy's own 595/596 saying it
+// could not reach the node that owns the resource. A timeout or a dropped
+// connection mid-request means the call may already have taken effect, and
+// re-sending it turns a success into a confusing "already running" failure.
+func retrySafe(method string, err error) bool {
+	if method == http.MethodGet {
+		return true
+	}
+	var ae *apiError
+	if errors.As(err, &ae) {
+		return ae.Status == 595 || ae.Status == 596
+	}
+	var oe *net.OpError
+	if errors.As(err, &oe) {
+		return oe.Op == "dial"
+	}
+	return false
+}
+
 func (c *Client) do(ctx context.Context, method, path string, params url.Values, out any) error {
 	if len(c.endpoints) == 0 {
 		return fmt.Errorf("no usable API endpoint remains (all candidates were excluded)")
@@ -173,6 +195,10 @@ func (c *Client) do(ctx context.Context, method, path string, params url.Values,
 			// A real API error (403, 404, 400...) is the same from every
 			// endpoint; failing over would just repeat it.
 			return err
+		}
+		if !retrySafe(method, err) {
+			return fmt.Errorf("%s %s via %s failed after the request may have been applied; not retrying elsewhere: %w",
+				method, path, ep, err)
 		}
 		lastErr = err
 		c.log.Debugf("endpoint %s failed (%v), trying next", ep, err)

@@ -80,6 +80,44 @@ type Env struct {
 	// StateDir is where the lock and run state live. Overridable so the checks
 	// that read them can be tested without touching /etc/pve.
 	StateDir string
+
+	// Several preflight checks read the same two documents. Memoising them for
+	// the duration of one preflight halves its round-trips -- and its exposure
+	// to request timeouts, which is worth most exactly when the cluster is
+	// degraded and preflight is being run.
+	cachedCluster *pve.ClusterStatus
+	cachedCeph    *pve.CephStatus
+}
+
+// invalidate drops the memoised reads. Called at the start of each preflight so
+// a later run in the same process never sees stale data.
+func (e *Env) invalidate() {
+	e.cachedCluster = nil
+	e.cachedCeph = nil
+}
+
+func (e *Env) clusterStatus(ctx context.Context) (*pve.ClusterStatus, error) {
+	if e.cachedCluster != nil {
+		return e.cachedCluster, nil
+	}
+	st, err := e.PVEAll.ClusterStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	e.cachedCluster = st
+	return st, nil
+}
+
+func (e *Env) cephStatus(ctx context.Context) (*pve.CephStatus, error) {
+	if e.cachedCeph != nil {
+		return e.cachedCeph, nil
+	}
+	cs, err := e.PVEAll.CephStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	e.cachedCeph = cs
+	return cs, nil
 }
 
 // ReleaseLock drops the maintenance lock unless the command asked to keep it.

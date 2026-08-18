@@ -103,6 +103,7 @@ func (e *Env) skipped(name string) bool {
 // forShutdown selects the checks that only matter when a node is about to go
 // away; `preflight` with no target runs the cluster-wide subset.
 func Preflight(ctx context.Context, e *Env, forShutdown bool) *Report {
+	e.invalidate()
 	r := &Report{}
 	run := func(name string, fn func()) {
 		if e.skipped(name) {
@@ -167,7 +168,7 @@ func checkLock(e *Env, r *Report) {
 }
 
 func checkQuorum(ctx context.Context, e *Env, r *Report) {
-	st, err := e.PVEAll.ClusterStatus(ctx)
+	st, err := e.clusterStatus(ctx)
 	if err != nil {
 		r.add("quorum", Fail, "cannot read cluster status: %v", err)
 		return
@@ -187,7 +188,7 @@ func checkQuorum(ctx context.Context, e *Env, r *Report) {
 // checkNodesOnline is the most important check in the list: taking a second
 // node down breaks both corosync quorum and Ceph min_size=2 at once.
 func checkNodesOnline(ctx context.Context, e *Env, r *Report) {
-	st, err := e.PVEAll.ClusterStatus(ctx)
+	st, err := e.clusterStatus(ctx)
 	if err != nil {
 		r.add("nodes-online", Fail, "cannot read cluster status: %v", err)
 		return
@@ -218,7 +219,7 @@ func checkSelfHost(e *Env, r *Report) {
 }
 
 func checkCephHealth(ctx context.Context, e *Env, r *Report) {
-	cs, err := e.PVEAll.CephStatus(ctx)
+	cs, err := e.cephStatus(ctx)
 	if err != nil {
 		r.add("ceph-health", Fail, "cannot read ceph status: %v", err)
 		return
@@ -232,7 +233,7 @@ func checkCephHealth(ctx context.Context, e *Env, r *Report) {
 }
 
 func checkCephPGs(ctx context.Context, e *Env, r *Report) {
-	cs, err := e.PVEAll.CephStatus(ctx)
+	cs, err := e.cephStatus(ctx)
 	if err != nil {
 		r.add("ceph-pgs", Fail, "cannot read ceph status: %v", err)
 		return
@@ -290,6 +291,12 @@ func checkDrain(ctx context.Context, e *Env, r *Report) {
 	prev, err := e.K8s.DrainPreview(ctx, e.Node.Talos.Name, e.Opts.TimeoutDrain)
 	if err != nil {
 		r.add("k8s-drain", Fail, "drain preview failed: %v", err)
+		return
+	}
+	if len(prev.Refusals) > 0 {
+		// These are the errors RunNodeDrain itself fails on, so failing here
+		// stops the maintenance before it has set flags and cordoned anything.
+		r.add("k8s-drain", Fail, "drain would refuse to run: %s", strings.Join(prev.Refusals, "; "))
 		return
 	}
 	if len(prev.Blocked) > 0 {

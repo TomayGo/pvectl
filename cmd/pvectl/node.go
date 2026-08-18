@@ -163,7 +163,18 @@ func runNodeOp(ctx context.Context, target, command string) error {
 		e.Log.Plain("(dry run) walking the plan read-only:")
 	}
 	if err := e.Confirm(ctx, confirmPrompt(e, command)); err != nil {
-		e.ReleaseLock()
+		e.KeepLock = false
+		if rerr := e.ReleaseLock(); rerr != nil {
+			e.Log.Warnf("%v", rerr)
+		}
+		// NewRunner has already written state.json. Nothing ran, so leaving it
+		// behind would make `status` and `doctor` report a phantom interrupted
+		// run -- but only discard state this run actually created.
+		if !r.Continued && !e.Opts.DryRun {
+			if rerr := state.RemoveState(state.Dir); rerr != nil {
+				e.Log.Warnf("could not clear state.json: %v", rerr)
+			}
+		}
 		return err
 	}
 	start := time.Now()

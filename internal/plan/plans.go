@@ -42,22 +42,12 @@ func StepsFor(command string, e *Env) ([]Step, error) {
 	case CmdMaintEnter:
 		return maintEnterSteps(e, false), nil
 	case CmdShutdown:
-		return append(maintEnterSteps(e, true),
-			stepTalosStop(),
-			stepGuestStop(),
-			stepHostPower("shutdown"),
-			stepWaitDown(),
-		), nil
+		steps := append(maintEnterSteps(e, true), stepTalosStop(), stepGuestStop())
+		return append(steps, hostPowerAndWait("shutdown")...), nil
 	case CmdReboot:
-		return append(maintEnterSteps(e, true),
-			stepTalosStop(),
-			stepGuestStop(),
-			stepHostPower("reboot"),
-			stepWaitDown(),
-			stepWaitUp(),
-			stepRestore(),
-			stepVerify(),
-		), nil
+		steps := append(maintEnterSteps(e, true), stepTalosStop(), stepGuestStop())
+		steps = append(steps, hostPowerAndWait("reboot")...)
+		return append(steps, stepWaitUp(), stepRestore(), stepVerify()), nil
 	case CmdStart:
 		return []Step{
 			stepLock(),
@@ -74,6 +64,14 @@ func StepsFor(command string, e *Env) ([]Step, error) {
 		}, nil
 	}
 	return nil, fmt.Errorf("unknown command %q in state.json", command)
+}
+
+// hostPowerAndWait keeps the power step and its waiter together. wait-down
+// reads the uptime that the power step recorded, so the two must agree on the
+// step name -- building them from one string is what guarantees that.
+func hostPowerAndWait(command string) []Step {
+	name := "host-" + command
+	return []Step{stepHostPower(command), stepWaitDown(name)}
 }
 
 // KeepsLockOnSuccess reports whether the node is still under maintenance when
@@ -114,6 +112,7 @@ func NewRunner(e *Env, command string) (*Runner, error) {
 
 	switch {
 	case continues && existing != nil && existing.Target == e.Target:
+		r.Continued = true
 		e.Log.Infof("continuing the maintenance window opened by `%s %s`", existing.Command, existing.Target)
 		existing.Command = command
 		for _, s := range r.StepNames() {
@@ -127,17 +126,41 @@ func NewRunner(e *Env, command string) (*Runner, error) {
 		e.Log.Warnf("no earlier state found for %s; restore will only do what it can infer", e.Target)
 		e.State = state.NewState(state.Dir, command, e.Target, e.Self, r.StepNames())
 	default:
+		fresh := state.NewState(state.Dir, command, e.Target, e.Self, r.StepNames())
 		if existing != nil && !existing.Finished {
 			e.Log.Warnf("discarding an unfinished %s %s state; run `pvectl abort` first if you meant to roll it back",
 				existing.Command, existing.Target)
+			if existing.Target == e.Target {
+				// The steps re-run from the start, but what the abandoned
+				// attempt already changed is still changed. Carry its rollback
+				// data over, or this run disowns the ceph flags and silences
+				// the last one created and restore leaves them behind.
+				carryRollbackData(existing, fresh)
+			}
 		}
-		e.State = state.NewState(state.Dir, command, e.Target, e.Self, r.StepNames())
+		e.State = fresh
 	}
 	e.State.SetDryRun(e.Opts.DryRun)
 	if err := e.State.Save(); err != nil {
 		return nil, fmt.Errorf("persist run state: %w", err)
 	}
 	return r, nil
+}
+
+// carryRollbackData copies each step's recorded undo data from an abandoned
+// run into a fresh one, for steps the new plan also has.
+func carryRollbackData(from, to *state.State) {
+	for _, old := range from.Steps {
+		if len(old.Data) == 0 {
+			continue
+		}
+		if to.Step(old.Name) == nil {
+			continue
+		}
+		for k, v := range old.Data {
+			to.SetData(old.Name, k, v)
+		}
+	}
 }
 
 // ResumeRunner rebuilds the runner for whatever run is recorded in state.json.

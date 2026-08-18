@@ -33,6 +33,10 @@ type Runner struct {
 	Steps []Step
 	// Name is the command this plan implements, recorded in state.json.
 	Name string
+	// Continued reports that this run adopted an earlier run's state rather
+	// than creating its own. A caller that abandons the run before it starts
+	// must not delete state it did not write.
+	Continued bool
 }
 
 func (r *Runner) StepNames() []string {

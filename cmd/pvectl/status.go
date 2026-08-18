@@ -329,12 +329,15 @@ func runDoctor(ctx context.Context, e *plan.Env, fix bool) error {
 	lg.Plain("pvectl doctor (from %s)%s", e.Self, map[bool]string{true: " --fix", false: ""}[fix])
 	lg.Plain("")
 
-	inProgress := false
 	held, _ := state.Peek(state.Dir)
 	st, _ := state.LoadState(state.Dir)
-	if held != nil || (st != nil && !st.Finished) {
-		inProgress = true
-	}
+	// A lock paired with a run for the same node is an open maintenance
+	// window, even when that run finished: `shutdown node X` leaves the node
+	// off and the lock held until `start node X` closes it. A lock with no run
+	// behind it is a leftover from a crash between Acquire and the first state
+	// write, and clearing that is exactly what doctor is for.
+	staleLock := held != nil && (st == nil || st.Target != held.Target)
+	inProgress := (held != nil && !staleLock) || (st != nil && !st.Finished)
 	if inProgress {
 		lg.Plain("A maintenance is in progress; doctor will report but not touch anything.")
 		if held != nil {
@@ -416,10 +419,10 @@ func runDoctor(ctx context.Context, e *plan.Env, fix bool) error {
 		lg.Plain("[ok]   silences     : none")
 	}
 
-	// stale lock with a finished run
-	if !inProgress && held != nil {
+	// a lock with no run behind it
+	if staleLock {
 		found++
-		lg.Plain("[warn] lock         : held by %s with no run in progress", held.Holder)
+		lg.Plain("[warn] lock         : held by %s for %s with no matching run", held.Holder, held.Target)
 		if fix {
 			if err := state.ForceRelease(state.Dir); err != nil {
 				lg.Plain("       -> release failed: %v", err)
@@ -457,5 +460,3 @@ func runDoctor(ctx context.Context, e *plan.Env, fix bool) error {
 	}
 	return nil
 }
-
-var _ = context.Background

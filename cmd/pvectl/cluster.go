@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -39,7 +38,11 @@ Progress is recorded, so re-running it continues where it left off.`),
 			if args[0] != "cluster" {
 				return fmt.Errorf("expected `rolling reboot cluster`, got %q", args[0])
 			}
-			return runRollingReboot(cmd.Context())
+			restart, err := cmd.Flags().GetBool("restart")
+			if err != nil {
+				return err
+			}
+			return runRollingReboot(cmd.Context(), restart)
 		},
 	}
 	reboot.Flags().Bool("restart", false, "discard recorded progress and start from the first node")
@@ -47,7 +50,7 @@ Progress is recorded, so re-running it continues where it left off.`),
 	return c
 }
 
-func runRollingReboot(ctx context.Context) error {
+func runRollingReboot(ctx context.Context, restart bool) error {
 	cfg, lg, err := setup()
 	if err != nil {
 		return err
@@ -67,6 +70,10 @@ func runRollingReboot(ctx context.Context) error {
 	prog, err := state.LoadRolling(state.Dir)
 	if err != nil {
 		lg.Warnf("%v", err)
+		prog = nil
+	}
+	if restart && prog != nil {
+		lg.Plain("--restart: discarding recorded progress (%s)", strings.Join(prog.Done, ", "))
 		prog = nil
 	}
 	if prog == nil {
@@ -172,15 +179,11 @@ func runClusterShutdown(ctx context.Context) error {
 		return err
 	}
 
-	lk, _, err := lockCluster(e, "shutdown-cluster")
-	if err != nil {
+	// The lock is taken and deliberately never released here: the cluster ends
+	// up off, and `pvectl start cluster` is what closes the window.
+	if _, _, err := lockCluster(e, "shutdown-cluster"); err != nil {
 		return err
 	}
-	defer func() {
-		// The lock is intentionally left in place: the cluster is off, and the
-		// next thing that should happen is `pvectl start cluster`.
-		_ = lk
-	}()
 
 	if !e.Opts.NoSilence {
 		e.Log.Step("silence", "silence Alertmanager cluster-wide")
@@ -300,6 +303,17 @@ func runClusterStart(ctx context.Context) error {
 		lg.Plain("DRY RUN: nothing will be changed.")
 	}
 
+	// Take the lock before touching anything. AcquireOrAdopt refuses a lock
+	// held for a single node, which is what stops `start cluster` from
+	// bulldozing a `shutdown node pve-2` window that is still open.
+	lk, adopted, err := lockCluster(e, "start-cluster")
+	if err != nil {
+		return err
+	}
+	if adopted {
+		lg.Plain("adopting the cluster maintenance lock held since %s", lk.Info.Started.Format(time.RFC3339))
+	}
+
 	e.Log.Step("wake", "send Wake-on-LAN to every node that is down")
 	for _, n := range e.Cfg.NodeNames() {
 		nc := e.Cfg.Nodes[n]
@@ -399,10 +413,16 @@ func runClusterStart(ctx context.Context) error {
 			e.Log.Warnf("%v", err)
 		}
 	}
-	if err := state.ForceRelease(state.Dir); err != nil {
+	if err := lk.Release(); err != nil {
 		e.Log.Warnf("could not release the maintenance lock: %v", err)
 	}
-	_ = state.RemoveState(state.Dir)
+	// Only clear run state that belongs to this cluster-wide window; a node's
+	// state.json is none of our business.
+	if !e.Opts.DryRun {
+		if st, _ := state.LoadState(state.Dir); st != nil && st.Target == "cluster" {
+			_ = state.RemoveState(state.Dir)
+		}
+	}
 	lg.Plain("")
 	lg.Plain("Cluster is back in service.")
 	return nil
@@ -433,5 +453,3 @@ func lockCluster(e *plan.Env, command string) (*state.Lock, bool, error) {
 	}
 	return state.AcquireOrAdopt(state.Dir, e.Self, "cluster", command)
 }
-
-var _ = url.Values{}

@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/tamago/pvectl/internal/alert"
-	"github.com/tamago/pvectl/internal/pve"
-	"github.com/tamago/pvectl/internal/state"
 	"github.com/tamago/pvectl/internal/wol"
 )
 
@@ -127,10 +125,21 @@ func setCephFlags(ctx context.Context, e *Env, flags []string) error {
 	if err != nil {
 		return err
 	}
-	var ours []string
+	// Seed from anything an earlier attempt at this same maintenance recorded.
+	// Without this, re-running a command after a failure sees its own flags as
+	// pre-existing, disowns them, and restore leaves noout set forever.
+	ours := toStrings(dataOf(e, "ceph-flags", "set_by_us"))
+	owned := map[string]bool{}
+	for _, f := range ours {
+		owned[f] = true
+	}
 	for _, f := range flags {
 		if before[f] {
-			e.Log.Infof("ceph flag %s was already set; leaving it to whoever set it", f)
+			if owned[f] {
+				e.Log.Infof("ceph flag %s was set by an earlier attempt at this maintenance; keeping ownership", f)
+			} else {
+				e.Log.Infof("ceph flag %s was already set; leaving it to whoever set it", f)
+			}
 			continue
 		}
 		if err := e.PVE.SetCephFlag(ctx, f, true); err != nil {
@@ -139,7 +148,10 @@ func setCephFlags(ctx context.Context, e *Env, flags []string) error {
 		if !e.Opts.DryRun {
 			e.Log.Infof("ceph flag %s set", f)
 		}
-		ours = append(ours, f)
+		if !owned[f] {
+			owned[f] = true
+			ours = append(ours, f)
+		}
 	}
 	e.State.SetData("ceph-flags", "set_by_us", ours)
 	return nil
@@ -413,6 +425,13 @@ func startGuests(ctx context.Context, e *Env, ids []int) error {
 				kind = g.Kind()
 			}
 		}
+		// PVE rejects a start on a running guest, so without this a restore
+		// that failed halfway can never be resumed: the guests it already
+		// started would fail the retry every time.
+		if st, err := e.PVE.GuestStatus(ctx, e.Target, kind, id); err == nil && st.Status == "running" {
+			e.Log.Infof("guest %d is already running", id)
+			continue
+		}
 		upid, err := e.PVE.GuestStart(ctx, e.Target, kind, id)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("start %d: %v", id, err))
@@ -460,7 +479,7 @@ func stepHostPower(command string) Step {
 
 // ---------- 10. wait down ----------
 
-func stepWaitDown() Step {
+func stepWaitDown(powerStep string) Step {
 	return Step{
 		Name: "wait-down",
 		Desc: "wait for the host to leave the cluster",
@@ -477,7 +496,7 @@ func stepWaitDown() Step {
 			//     recorded just before the command, which is proof it went
 			//     down and came back
 			before := int64(-1)
-			if v, ok := dataOf(e, "host-reboot", "uptime_before").(float64); ok {
+			if v, ok := dataOf(e, powerStep, "uptime_before").(float64); ok {
 				before = int64(v)
 			}
 			deadline := time.Now().Add(e.Opts.TimeoutDown)
@@ -767,6 +786,3 @@ func (e *Env) impactSummary() string {
 	parts = append(parts, fmt.Sprintf("kubernetes loses %s", e.Node.Talos.Name))
 	return strings.Join(parts, "; ")
 }
-
-var _ = state.StepDone
-var _ = pve.Resource{}

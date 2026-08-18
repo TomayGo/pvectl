@@ -180,7 +180,11 @@ type DrainPreviewResult struct {
 	// disruptions. kubectl's own --dry-run does not catch these because PDBs
 	// are only enforced at eviction time, and a drain that trips one hangs
 	// until the timeout.
-	Blocked  []PodRef
+	Blocked []PodRef
+	// Refusals are the filter errors GetPodsForDeletion returns -- an
+	// unmanaged pod, a DaemonSet pod we are not ignoring. RunNodeDrain fails
+	// on exactly these, so they are blockers, not advisories.
+	Refusals []string
 	Warnings []string
 }
 
@@ -190,7 +194,7 @@ func (c *Client) DrainPreview(ctx context.Context, name string, timeout time.Dur
 	list, errs := h.GetPodsForDeletion(name)
 	res := &DrainPreviewResult{}
 	for _, e := range errs {
-		res.Warnings = append(res.Warnings, e.Error())
+		res.Refusals = append(res.Refusals, e.Error())
 	}
 	if list == nil {
 		if len(errs) > 0 {
