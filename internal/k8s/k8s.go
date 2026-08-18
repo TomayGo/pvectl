@@ -12,6 +12,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -27,24 +28,41 @@ import (
 )
 
 type Client struct {
-	cs     kubernetes.Interface
-	log    *plog.Logger
-	dryRun bool
+	kubeconfig string
+	once       sync.Once
+	client     kubernetes.Interface
+	clientErr  error
+	log        *plog.Logger
+	dryRun     bool
 }
 
-func New(kubeconfig string, lg *plog.Logger, dryRun bool) (*Client, error) {
-	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
-	if err != nil {
-		return nil, fmt.Errorf("load kubeconfig %s: %w", kubeconfig, err)
-	}
-	// The API server sits behind the same LAN the node is on; a hung request
-	// must not stall a maintenance window.
-	cfg.Timeout = 30 * time.Second
-	cs, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("build kubernetes client: %w", err)
-	}
-	return &Client{cs: cs, log: lg, dryRun: dryRun}, nil
+// New never fails: the client is built on first use instead.
+//
+// Half of pvectl's commands -- status, doctor, config validate -- have plenty
+// to say about quorum, Ceph and the maintenance lock without Kubernetes. A
+// missing kubeconfig should cost you the Kubernetes lines, not the whole tool.
+func New(kubeconfig string, lg *plog.Logger, dryRun bool) *Client {
+	return &Client{kubeconfig: kubeconfig, log: lg, dryRun: dryRun}
+}
+
+func (c *Client) cs() (kubernetes.Interface, error) {
+	c.once.Do(func() {
+		cfg, err := clientcmd.BuildConfigFromFlags("", c.kubeconfig)
+		if err != nil {
+			c.clientErr = fmt.Errorf("load kubeconfig %s: %w", c.kubeconfig, err)
+			return
+		}
+		// The API server sits behind the same LAN the node is on; a hung
+		// request must not stall a maintenance window.
+		cfg.Timeout = 30 * time.Second
+		cl, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			c.clientErr = fmt.Errorf("build kubernetes client: %w", err)
+			return
+		}
+		c.client = cl
+	})
+	return c.client, c.clientErr
 }
 
 type NodeInfo struct {
@@ -56,7 +74,11 @@ type NodeInfo struct {
 }
 
 func (c *Client) Nodes(ctx context.Context) ([]NodeInfo, error) {
-	list, err := c.cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	cs, err := c.cs()
+	if err != nil {
+		return nil, err
+	}
+	list, err := cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -81,17 +103,25 @@ func (c *Client) Nodes(ctx context.Context) ([]NodeInfo, error) {
 }
 
 func (c *Client) node(ctx context.Context, name string) (*corev1.Node, error) {
-	n, err := c.cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+	cs, err := c.cs()
+	if err != nil {
+		return nil, err
+	}
+	n, err := cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("get node %s: %w", name, err)
 	}
 	return n, nil
 }
 
-func (c *Client) helper(ctx context.Context, timeout time.Duration) *drain.Helper {
+func (c *Client) helper(ctx context.Context, timeout time.Duration) (*drain.Helper, error) {
+	cs, err := c.cs()
+	if err != nil {
+		return nil, err
+	}
 	return &drain.Helper{
 		Ctx:                 ctx,
-		Client:              c.cs,
+		Client:              cs,
 		IgnoreAllDaemonSets: true,
 		DeleteEmptyDirData:  true,
 		// Negative means "use the pod's own terminationGracePeriodSeconds";
@@ -111,7 +141,7 @@ func (c *Client) helper(ctx context.Context, timeout time.Duration) *drain.Helpe
 			}
 			c.log.Debugf("%s/%s %s", pod.Namespace, pod.Name, verb)
 		},
-	}
+	}, nil
 }
 
 // SetSchedulable cordons (desired=false) or uncordons (desired=true).
@@ -129,7 +159,11 @@ func (c *Client) SetSchedulable(ctx context.Context, name string, schedulable bo
 		c.log.Infof("(dry-run) would mark node %s %s", name, schedulableWord(schedulable))
 		return nil
 	}
-	if err, patchErr := h.PatchOrReplaceWithContext(ctx, c.cs, false); err != nil || patchErr != nil {
+	cs, err := c.cs()
+	if err != nil {
+		return err
+	}
+	if err, patchErr := h.PatchOrReplaceWithContext(ctx, cs, false); err != nil || patchErr != nil {
 		if patchErr != nil {
 			return fmt.Errorf("cordon %s: %w", name, patchErr)
 		}
@@ -158,7 +192,10 @@ func (c *Client) Drain(ctx context.Context, name string, timeout time.Duration) 
 		c.log.Infof("(dry-run) would evict %d pod(s) from %s", len(pods.Evictable), name)
 		return nil
 	}
-	h := c.helper(ctx, timeout)
+	h, err := c.helper(ctx, timeout)
+	if err != nil {
+		return err
+	}
 	if err := drain.RunNodeDrain(h, name); err != nil {
 		return fmt.Errorf("drain %s: %w", name, err)
 	}
@@ -190,7 +227,10 @@ type DrainPreviewResult struct {
 
 // DrainPreview is preflight's read-only look at what a drain would do.
 func (c *Client) DrainPreview(ctx context.Context, name string, timeout time.Duration) (*DrainPreviewResult, error) {
-	h := c.helper(ctx, timeout)
+	h, err := c.helper(ctx, timeout)
+	if err != nil {
+		return nil, err
+	}
 	list, errs := h.GetPodsForDeletion(name)
 	res := &DrainPreviewResult{}
 	for _, e := range errs {
@@ -221,9 +261,13 @@ func (c *Client) pdbBlockers(ctx context.Context, pods []corev1.Pod) ([]PodRef, 
 	for _, p := range pods {
 		namespaces[p.Namespace] = true
 	}
+	cs, err := c.cs()
+	if err != nil {
+		return nil, err
+	}
 	byNS := map[string][]policyv1.PodDisruptionBudget{}
 	for ns := range namespaces {
-		l, err := c.cs.PolicyV1().PodDisruptionBudgets(ns).List(ctx, metav1.ListOptions{})
+		l, err := cs.PolicyV1().PodDisruptionBudgets(ns).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			if apierrors.IsForbidden(err) || apierrors.IsNotFound(err) {
 				continue
@@ -261,10 +305,14 @@ func (c *Client) pdbBlockers(ctx context.Context, pods []corev1.Pod) ([]PodRef, 
 // node that has not reappeared in the API at all counts as not-ready rather
 // than an error, because after a reboot the object is there but stale.
 func (c *Client) WaitReady(ctx context.Context, name string, timeout time.Duration) error {
+	cs, err := c.cs()
+	if err != nil {
+		return err
+	}
 	deadline := time.Now().Add(timeout)
 	var last string
 	for {
-		n, err := c.cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+		n, err := cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 		if err == nil {
 			ready := false
 			for _, cond := range n.Status.Conditions {
@@ -356,8 +404,12 @@ func (c *Client) ProxyRequest(ctx context.Context, method, namespace, service st
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
+	cs, err := c.cs()
+	if err != nil {
+		return nil, err
+	}
 	abs := fmt.Sprintf("/api/v1/namespaces/%s/services/%s:%d/proxy%s", namespace, service, port, path)
-	req := c.cs.CoreV1().RESTClient().Verb(method).AbsPath(abs)
+	req := cs.CoreV1().RESTClient().Verb(method).AbsPath(abs)
 	if body != nil {
 		req = req.Body(body).SetHeader("Content-Type", "application/json")
 	}

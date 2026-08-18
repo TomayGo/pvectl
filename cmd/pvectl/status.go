@@ -235,6 +235,11 @@ func newResumeCmd() *cobra.Command {
 			if !plan.KeepsLockOnSuccess(st.Command) && !e.Opts.DryRun {
 				_ = state.RemoveState(state.Dir)
 			}
+			// A rolling reboot that was rescued with `resume` still has to
+			// close its entry, or the next roll reboots this node again.
+			if !e.Opts.DryRun {
+				closeRollingEntry(e, st.Command, st.Target)
+			}
 			lg.Plain("")
 			lg.Plain("resume completed in %s.", elapsed(start))
 			return nil

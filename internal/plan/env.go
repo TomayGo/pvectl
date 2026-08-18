@@ -175,10 +175,7 @@ func NewEnv(cfg *config.Config, target string, lg *plog.Logger, opts Options) (*
 		e.PVE = cl
 	}
 
-	kc, err := k8s.New(cfg.SecretPath("kubeconfig"), lg, opts.DryRun)
-	if err != nil {
-		return nil, err
-	}
+	kc := k8s.New(cfg.SecretPath("kubeconfig"), lg, opts.DryRun)
 	e.K8s = kc
 	e.Talos = talos.New(cfg.SecretPath("talosconfig"), lg, opts.DryRun)
 	e.Alert = alert.New(kc,

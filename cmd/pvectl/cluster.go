@@ -206,15 +206,40 @@ func runClusterShutdown(ctx context.Context) error {
 		e.Log.Infof("ceph flag %s set", f)
 	}
 
-	e.Log.Step("guests", "shut down Talos VMs and passthrough guests on every node")
+	// Every Talos shutdown is issued before any of them is waited on. Stopping
+	// them one at a time means the third one is asked to shut down gracefully
+	// after etcd has already lost quorum, so it blocks on an unreachable
+	// control plane, blows past the timeout, and aborts the whole run with
+	// Ceph frozen and half the cluster down.
+	e.Log.Step("talos", "shut down every Talos control-plane VM together")
+	type pending struct {
+		node string
+		vmid int
+		upid string
+	}
+	var inflight []pending
 	for _, n := range e.Cfg.NodeNames() {
 		nc := e.Cfg.Nodes[n]
-		if nc.Talos.VMID != 0 {
-			if err := shutdownGuest(ctx, e, n, "qemu", nc.Talos.VMID); err != nil {
-				return err
-			}
+		if nc.Talos.VMID == 0 {
+			continue
 		}
-		for _, gst := range nc.StopGuests {
+		upid, running, err := requestGuestShutdown(ctx, e, n, "qemu", nc.Talos.VMID)
+		if err != nil {
+			return err
+		}
+		if running {
+			inflight = append(inflight, pending{n, nc.Talos.VMID, upid})
+		}
+	}
+	for _, p := range inflight {
+		if err := awaitGuestShutdown(ctx, e, p.node, "qemu", p.vmid, p.upid); err != nil {
+			return err
+		}
+	}
+
+	e.Log.Step("guests", "shut down passthrough guests on every node")
+	for _, n := range e.Cfg.NodeNames() {
+		for _, gst := range e.Cfg.Nodes[n].StopGuests {
 			if err := shutdownGuest(ctx, e, n, gst.Kind(), gst.ID); err != nil {
 				return err
 			}
@@ -244,37 +269,55 @@ func runClusterShutdown(ctx context.Context) error {
 	return nil
 }
 
-func shutdownGuest(ctx context.Context, e *plan.Env, node, kind string, vmid int) error {
+func gracefulWindow(e *plan.Env) time.Duration {
+	if e.Opts.ForceStopAfter > 0 {
+		return e.Opts.ForceStopAfter
+	}
+	return e.Opts.TimeoutGuest
+}
+
+// requestGuestShutdown sends the ACPI shutdown and returns its worker UPID.
+// running is false when there was nothing to stop.
+func requestGuestShutdown(ctx context.Context, e *plan.Env, node, kind string, vmid int) (string, bool, error) {
 	st, err := e.PVEAll.GuestStatus(ctx, node, kind, vmid)
 	if err != nil {
 		e.Log.Warnf("cannot read guest %d on %s: %v", vmid, node, err)
-		return nil
+		return "", false, nil
 	}
 	if st.Status != "running" {
 		e.Log.Infof("guest %d on %s is already %s", vmid, node, st.Status)
-		return nil
+		return "", false, nil
 	}
-	graceful := e.Opts.TimeoutGuest
-	if e.Opts.ForceStopAfter > 0 {
-		graceful = e.Opts.ForceStopAfter
-	}
-	upid, err := e.PVEAll.GuestShutdown(ctx, node, kind, vmid, graceful, false)
+	upid, err := e.PVEAll.GuestShutdown(ctx, node, kind, vmid, gracefulWindow(e), false)
 	if err != nil {
-		return fmt.Errorf("shutdown guest %d on %s: %w", vmid, node, err)
+		return "", false, fmt.Errorf("shutdown guest %d on %s: %w", vmid, node, err)
 	}
+	return upid, true, nil
+}
+
+func awaitGuestShutdown(ctx context.Context, e *plan.Env, node, kind string, vmid int, upid string) error {
+	graceful := gracefulWindow(e)
 	if err := e.PVEAll.WaitTask(ctx, node, upid, graceful+30*time.Second); err != nil {
 		if e.Opts.ForceStopAfter <= 0 {
 			return fmt.Errorf("guest %d on %s did not shut down within %s: %w (use --force-stop-after)", vmid, node, graceful, err)
 		}
 		e.Log.Warnf("guest %d did not stop cleanly (%v); forcing", vmid, err)
-		upid, serr := e.PVEAll.GuestStop(ctx, node, kind, vmid)
+		supid, serr := e.PVEAll.GuestStop(ctx, node, kind, vmid)
 		if serr != nil {
 			return serr
 		}
-		return e.PVEAll.WaitTask(ctx, node, upid, 2*time.Minute)
+		return e.PVEAll.WaitTask(ctx, node, supid, 2*time.Minute)
 	}
 	e.Log.Infof("guest %d on %s stopped", vmid, node)
 	return nil
+}
+
+func shutdownGuest(ctx context.Context, e *plan.Env, node, kind string, vmid int) error {
+	upid, running, err := requestGuestShutdown(ctx, e, node, kind, vmid)
+	if err != nil || !running {
+		return err
+	}
+	return awaitGuestShutdown(ctx, e, node, kind, vmid, upid)
 }
 
 // ---------- start cluster ----------

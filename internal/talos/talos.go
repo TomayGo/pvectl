@@ -77,16 +77,21 @@ func isDisconnect(err error) bool {
 }
 
 // Alive reports whether the node answers the Version API.
-func (c *Client) Alive(ctx context.Context, ip string) bool {
+//
+// The error return is the whole point: a node that is down and a talosconfig we
+// cannot even build a client from both produce alive=false, and callers that
+// treat the second as "already shut down" would skip the graceful stop and let
+// the host poweroff kill a live control-plane node.
+func (c *Client) Alive(ctx context.Context, ip string) (bool, error) {
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	cl, nctx, err := c.connect(cctx, ip)
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer cl.Close()
 	_, err = cl.Version(nctx)
-	return err == nil
+	return err == nil, nil
 }
 
 // WaitDown blocks until the node stops answering, which is the only reliable
@@ -97,7 +102,11 @@ func (c *Client) WaitDown(ctx context.Context, ip string, timeout time.Duration)
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		if !c.Alive(ctx, ip) {
+		alive, err := c.Alive(ctx, ip)
+		if err != nil {
+			return fmt.Errorf("cannot tell whether %s is down: %w", ip, err)
+		}
+		if !alive {
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -117,7 +126,11 @@ func (c *Client) WaitUp(ctx context.Context, ip string, timeout time.Duration) e
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		if c.Alive(ctx, ip) {
+		alive, err := c.Alive(ctx, ip)
+		if err != nil {
+			return fmt.Errorf("cannot reach %s: %w", ip, err)
+		}
+		if alive {
 			return nil
 		}
 		if time.Now().After(deadline) {

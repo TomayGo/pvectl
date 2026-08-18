@@ -176,12 +176,12 @@ func runNodeOp(ctx context.Context, target, command string, fromRolling bool) er
 		e.Log.Warnf("%v", err)
 	}
 	if !plan.KeepsLockOnSuccess(command) && !e.Opts.DryRun {
-		if err := state.RemoveState(state.Dir); err != nil {
+		if err := state.RemoveState(e.StateDir); err != nil {
 			e.Log.Warnf("could not clear state.json: %v", err)
 		}
 	}
-	if command == plan.CmdReboot && !fromRolling && !e.Opts.DryRun {
-		closeRollingEntry(e, target)
+	if !fromRolling && !e.Opts.DryRun {
+		closeRollingEntry(e, command, target)
 	}
 	e.Log.Plain("")
 	e.Log.Plain("%s %s completed in %s.", command, target, elapsed(start))
@@ -201,7 +201,21 @@ func runNodeOp(ctx context.Context, target, command string, fromRolling bool) er
 // to the operator. Without this the record would never be completed: the next
 // rolling reboot would resume it, treat the already-done nodes as done again,
 // and skip them while reporting success.
-func closeRollingEntry(e *plan.Env, node string) {
+// Only the commands that leave a node back in service close its entry;
+// `shutdown` and `maint enter` leave the window open, and the `start` /
+// `maint exit` that closes it is what counts.
+func closesRollingEntry(command string) bool {
+	switch command {
+	case plan.CmdReboot, plan.CmdStart, plan.CmdMaintExit:
+		return true
+	}
+	return false
+}
+
+func closeRollingEntry(e *plan.Env, command, node string) {
+	if !closesRollingEntry(command) {
+		return
+	}
 	prog, err := state.LoadRolling(e.StateDir)
 	if err != nil || prog == nil {
 		return
@@ -244,7 +258,7 @@ func abandonRun(e *plan.Env, removeState bool) {
 	// behind would make `status` and `doctor` report a phantom interrupted
 	// run -- but only discard state this run actually created.
 	if removeState && !e.Opts.DryRun {
-		if err := state.RemoveState(state.Dir); err != nil {
+		if err := state.RemoveState(e.StateDir); err != nil {
 			e.Log.Warnf("could not clear state.json: %v", err)
 		}
 	}
@@ -266,7 +280,7 @@ func acquireLock(e *plan.Env, command string) error {
 		}}
 		return nil
 	}
-	lk, adopted, err := state.AcquireOrAdopt(state.Dir, e.Self, e.Target, command)
+	lk, adopted, err := state.AcquireOrAdopt(e.StateDir, e.Self, e.Target, command)
 	if err != nil {
 		return err
 	}

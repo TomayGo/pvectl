@@ -60,7 +60,7 @@ func TestCloseRollingEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	closeRollingEntry(e, "pve-1")
+	closeRollingEntry(e, plan.CmdReboot, "pve-1")
 
 	got, err := state.LoadRolling(dir)
 	if err != nil {
@@ -79,8 +79,8 @@ func TestCloseRollingEntryKeepsUnfinishedRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	closeRollingEntry(e, "pve-2")
-	closeRollingEntry(e, "pve-2") // idempotent: must not double-count
+	closeRollingEntry(e, plan.CmdReboot, "pve-2")
+	closeRollingEntry(e, plan.CmdReboot, "pve-2") // idempotent: must not double-count
 
 	got, err := state.LoadRolling(dir)
 	if err != nil || got == nil {
@@ -98,9 +98,42 @@ func TestCloseRollingEntryKeepsUnfinishedRecord(t *testing.T) {
 func TestCloseRollingEntryNoRecord(t *testing.T) {
 	dir := t.TempDir()
 	e := &plan.Env{Target: "pve-3", StateDir: dir, Log: plog.Discard()}
-	closeRollingEntry(e, "pve-3")
+	closeRollingEntry(e, plan.CmdReboot, "pve-3")
 	got, err := state.LoadRolling(dir)
 	if err != nil || got != nil {
 		t.Fatalf("no record should have been created (%v, %v)", got, err)
+	}
+}
+
+// Only the commands that put a node back in service close its rolling entry.
+// `shutdown` leaves the window open; the `start` that closes it is what counts,
+// and `resume` rescuing an interrupted reboot has to count too.
+func TestClosesRollingEntry(t *testing.T) {
+	for _, c := range []string{plan.CmdReboot, plan.CmdStart, plan.CmdMaintExit} {
+		if !closesRollingEntry(c) {
+			t.Errorf("%s should close the rolling entry", c)
+		}
+	}
+	for _, c := range []string{plan.CmdShutdown, plan.CmdMaintEnter} {
+		if closesRollingEntry(c) {
+			t.Errorf("%s leaves the node out of service and must not close the entry", c)
+		}
+	}
+}
+
+func TestCloseRollingEntryIgnoresShutdown(t *testing.T) {
+	dir := t.TempDir()
+	e := &plan.Env{Target: "pve-1", StateDir: dir, Log: plog.Discard()}
+	prog := &state.Rolling{Order: []string{"pve-3", "pve-2", "pve-1"}, Done: []string{"pve-3", "pve-2"}}
+	if err := prog.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	closeRollingEntry(e, plan.CmdShutdown, "pve-1")
+	got, err := state.LoadRolling(dir)
+	if err != nil || got == nil {
+		t.Fatalf("record should survive a shutdown (%v, %v)", got, err)
+	}
+	if len(got.Done) != 2 {
+		t.Fatalf("shutdown must not mark the node done: %v", got.Done)
 	}
 }

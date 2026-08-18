@@ -155,6 +155,7 @@ Existing values for those are carried over from the current config.`),
 			if err != nil {
 				return err
 			}
+			b = append([]byte(config.GeneratedHeader), b...)
 			if !write {
 				fmt.Print(string(b))
 				fmt.Fprintf(os.Stderr, "\n(not written; re-run with --write to replace %s)\n", g.configPath)

@@ -327,7 +327,13 @@ func stepTalosStop() Step {
 			if e.Opts.DryRun {
 				return false, "", nil
 			}
-			if !e.Talos.Alive(ctx, e.Node.Talos.IP) {
+			alive, err := e.Talos.Alive(ctx, e.Node.Talos.IP)
+			if err != nil {
+				// Not "already down": we could not ask. Skipping here would
+				// hand a live control-plane node to host-poweroff.
+				return false, "", fmt.Errorf("cannot determine whether %s is running: %w", e.Node.Talos.Name, err)
+			}
+			if !alive {
 				return true, e.Node.Talos.Name + " is already down", nil
 			}
 			return false, "", nil
@@ -601,7 +607,11 @@ func stepWaitUp() Step {
 			// The Talos VM has onboot set, but it still has to boot; wait for
 			// its API before asking Kubernetes about the kubelet.
 			if err := waitFor(ctx, e, deadline, "talos API", func() (bool, string) {
-				return e.Talos.Alive(ctx, e.Node.Talos.IP), "no answer from " + e.Node.Talos.IP
+				alive, err := e.Talos.Alive(ctx, e.Node.Talos.IP)
+				if err != nil {
+					return false, err.Error()
+				}
+				return alive, "no answer from " + e.Node.Talos.IP
 			}); err != nil {
 				return err
 			}
