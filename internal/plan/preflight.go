@@ -135,14 +135,29 @@ func Preflight(ctx context.Context, e *Env, forShutdown bool) *Report {
 	return r
 }
 
+// checkLock refuses to start while someone else is working on the cluster.
+//
+// It has to tell "someone else's lock" from "the lock this run just took":
+// preflight is step 2 of every plan, and step 1 is what acquires the lock. The
+// distinction is the target -- AcquireOrAdopt has already refused any lock held
+// for a different node before this check ever runs, so a lock we are holding
+// here is necessarily for the node we are working on.
 func checkLock(e *Env, r *Report) {
-	held, err := state.Peek(state.Dir)
+	held, err := state.Peek(e.StateDir)
 	if err != nil {
 		r.add("cluster-lock", Fail, "cannot read the cluster lock: %v", err)
 		return
 	}
 	if held == nil {
+		if e.Lock != nil && e.Opts.DryRun {
+			r.add("cluster-lock", Pass, "free (this dry run did not take it)")
+			return
+		}
 		r.add("cluster-lock", Pass, "free")
+		return
+	}
+	if e.Lock != nil && held.Target == e.Target {
+		r.add("cluster-lock", Pass, "held by this run (%s %s)", held.Command, held.Target)
 		return
 	}
 	r.add("cluster-lock", Fail, "held: %s", held)

@@ -77,6 +77,9 @@ type Env struct {
 	// KeepLock stops the plan from releasing the lock on completion, for the
 	// commands that end with the node still under maintenance.
 	KeepLock bool
+	// StateDir is where the lock and run state live. Overridable so the checks
+	// that read them can be tested without touching /etc/pve.
+	StateDir string
 }
 
 // ReleaseLock drops the maintenance lock unless the command asked to keep it.
@@ -102,7 +105,7 @@ func (e *Env) ReleaseLock() error {
 // NewEnv wires up every client. target may be "" for cluster-wide commands,
 // in which case no endpoint is excluded.
 func NewEnv(cfg *config.Config, target string, lg *plog.Logger, opts Options) (*Env, error) {
-	e := &Env{Cfg: cfg, Target: target, Log: lg, Opts: opts}
+	e := &Env{Cfg: cfg, Target: target, Log: lg, Opts: opts, StateDir: state.Dir}
 	host, _ := os.Hostname()
 	e.Self = host
 
