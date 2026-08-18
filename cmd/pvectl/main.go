@@ -62,7 +62,7 @@ Every operation is the same list of steps executed by the same runner, so
 		"preflight checks to skip ("+strings.Join(plan.CheckNames, ", ")+")")
 	pf.BoolVar(&g.opts.NoSilence, "no-silence", false, "do not create Alertmanager silences or notify Discord")
 	pf.DurationVar(&g.opts.ForceStopAfter, "force-stop-after", 0,
-		"hard-stop a guest that has not shut down cleanly (0 = never)")
+		"give a guest this long to shut down cleanly, then hard-stop it (0 = never force)")
 	pf.DurationVar(&g.opts.TimeoutDrain, "timeout-drain", g.opts.TimeoutDrain, "kubernetes drain timeout")
 	pf.DurationVar(&g.opts.TimeoutGuest, "timeout-guest", g.opts.TimeoutGuest, "guest shutdown timeout")
 	pf.DurationVar(&g.opts.TimeoutMigrate, "timeout-migrate", g.opts.TimeoutMigrate, "HA evacuation timeout")

@@ -20,10 +20,15 @@ const (
 // maintEnterSteps is the shared prefix: everything that makes a node safe to
 // stop, without stopping it. `shutdown` is this plus a poweroff, which is
 // exactly why the two are one code path.
-func maintEnterSteps(e *Env) []Step {
+//
+// forShutdown says whether a poweroff follows. It gates the checks that only
+// make sense when the host is about to disappear -- running pvectl on the
+// target, or over the Wi-Fi its AP guest serves. `maint enter` leaves the host
+// up and its guests running, so blocking on those would be a false alarm.
+func maintEnterSteps(e *Env, forShutdown bool) []Step {
 	return []Step{
 		stepLock(),
-		stepPreflight(true),
+		stepPreflight(forShutdown),
 		stepSilence(),
 		stepCephFlags(e.Cfg.Cluster.CephFlags),
 		stepHAEvacuate(),
@@ -35,16 +40,16 @@ func maintEnterSteps(e *Env) []Step {
 func StepsFor(command string, e *Env) ([]Step, error) {
 	switch command {
 	case CmdMaintEnter:
-		return maintEnterSteps(e), nil
+		return maintEnterSteps(e, false), nil
 	case CmdShutdown:
-		return append(maintEnterSteps(e),
+		return append(maintEnterSteps(e, true),
 			stepTalosStop(),
 			stepGuestStop(),
 			stepHostPower("shutdown"),
 			stepWaitDown(),
 		), nil
 	case CmdReboot:
-		return append(maintEnterSteps(e),
+		return append(maintEnterSteps(e, true),
 			stepTalosStop(),
 			stepGuestStop(),
 			stepHostPower("reboot"),

@@ -1,6 +1,8 @@
 package plan
 
 import (
+	gocontext "context"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,6 +14,12 @@ func lockEnv(t *testing.T, target string) *Env {
 	t.Helper()
 	return &Env{Target: target, StateDir: t.TempDir(), Log: plog.Discard()}
 }
+
+func lockEnvBare(target string) *Env {
+	return &Env{Target: target, StateDir: os.TempDir(), Log: plog.Discard()}
+}
+
+func bgCtx() gocontext.Context { return gocontext.Background() }
 
 func statusOf(r *Report, name string) (Status, string) {
 	for _, c := range r.Results {
@@ -81,4 +89,40 @@ func TestCheckLockStandaloneSeesAnyLock(t *testing.T) {
 	if st, _ := statusOf(r, "cluster-lock"); st != Fail {
 		t.Fatalf("standalone preflight should report a held lock, got %s", st)
 	}
+}
+
+// The checks that only make sense when the host disappears must not run for
+// maint enter, which leaves guests running and the machine powered. Reporting
+// "will stop VM 103 -- the Wi-Fi drops" for an operation that stops nothing
+// trains people to ignore the warning.
+func TestPreflightGatesShutdownOnlyChecks(t *testing.T) {
+	shutdownOnly := map[string]bool{"self-host": true, "ssh-path": true, "guests": true}
+	for _, forShutdown := range []bool{false, true} {
+		names := plannedCheckNames(forShutdown)
+		for c := range shutdownOnly {
+			if got := names[c]; got != forShutdown {
+				t.Errorf("forShutdown=%v: check %q present=%v, want %v", forShutdown, c, got, forShutdown)
+			}
+		}
+		// The ones that apply to both must always be there: maint enter really
+		// does drain and evacuate.
+		for _, always := range []string{"cluster-lock", "quorum", "nodes-online", "ceph-health", "k8s-drain", "ha-capacity"} {
+			if !names[always] {
+				t.Errorf("forShutdown=%v: check %q is missing", forShutdown, always)
+			}
+		}
+	}
+}
+
+// plannedCheckNames reports which checks Preflight would run, by skipping them
+// all: a skipped check still appears in the report, an ungated one does not.
+func plannedCheckNames(forShutdown bool) map[string]bool {
+	e := lockEnvBare("pve-1")
+	e.Opts.SkipChecks = append([]string(nil), CheckNames...)
+	r := Preflight(bgCtx(), e, forShutdown)
+	out := map[string]bool{}
+	for _, c := range r.Results {
+		out[c.Name] = true
+	}
+	return out
 }

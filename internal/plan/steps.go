@@ -373,13 +373,20 @@ func stopGuests(ctx context.Context, e *Env) error {
 			e.Log.Warnf("stopping %d %s: %s", g.ID, lr.Name, g.Warn)
 		}
 		kind := lr.Kind()
-		upid, err := e.PVEAll.GuestShutdown(ctx, e.Target, kind, g.ID, e.Opts.TimeoutGuest, false)
+		// --force-stop-after names the deadline, so it is the deadline: give
+		// the guest that long to shut down cleanly, then pull the plug. With
+		// the flag unset we wait --timeout-guest and fail rather than force.
+		graceful := e.Opts.TimeoutGuest
+		if e.Opts.ForceStopAfter > 0 {
+			graceful = e.Opts.ForceStopAfter
+		}
+		upid, err := e.PVEAll.GuestShutdown(ctx, e.Target, kind, g.ID, graceful, false)
 		if err != nil {
 			return fmt.Errorf("shutdown guest %d: %w", g.ID, err)
 		}
-		if err := e.PVEAll.WaitTask(ctx, e.Target, upid, e.Opts.TimeoutGuest+time.Minute); err != nil {
+		if err := e.PVEAll.WaitTask(ctx, e.Target, upid, graceful+30*time.Second); err != nil {
 			if e.Opts.ForceStopAfter <= 0 {
-				return fmt.Errorf("guest %d did not shut down: %w (use --force-stop-after to hard-stop)", g.ID, err)
+				return fmt.Errorf("guest %d did not shut down within %s: %w (use --force-stop-after to hard-stop)", g.ID, graceful, err)
 			}
 			e.Log.Warnf("guest %d did not shut down cleanly (%v); forcing stop", g.ID, err)
 			upid, serr := e.PVEAll.GuestStop(ctx, e.Target, kind, g.ID)
@@ -435,6 +442,14 @@ func stepHostPower(command string) Step {
 		Desc:         desc,
 		Irreversible: true,
 		Do: func(ctx context.Context, e *Env) error {
+			// Record uptime first: if the host reboots faster than wait-down
+			// polls, a lower uptime afterwards is the only remaining proof
+			// that it actually went down.
+			if ns, err := e.PVE.NodeStatus(ctx, e.Target); err == nil {
+				e.State.SetData("host-"+command, "uptime_before", ns.Uptime)
+			} else {
+				e.Log.Debugf("could not record %s uptime before %s: %v", e.Target, command, err)
+			}
 			// This must go through another node's pveproxy; e.PVE already has
 			// the target excluded.
 			e.Log.Infof("sending %s to %s via %v", command, e.Target, e.PVE.Endpoints())
@@ -454,10 +469,22 @@ func stepWaitDown() Step {
 				e.Log.Infof("(dry-run) would wait for %s to go offline", e.Target)
 				return nil
 			}
+			// Three signals, because a reboot can be quick enough to slip
+			// between two polls of any single one:
+			//   - corosync marks the node offline
+			//   - the node's own API stops answering for several probes
+			//   - the node answers again but with a lower uptime than the one
+			//     recorded just before the command, which is proof it went
+			//     down and came back
+			before := int64(-1)
+			if v, ok := dataOf(e, "host-reboot", "uptime_before").(float64); ok {
+				before = int64(v)
+			}
 			deadline := time.Now().Add(e.Opts.TimeoutDown)
+			unreachable := 0
+			const unreachableProbes = 3
 			for {
-				st, err := e.PVE.ClusterStatus(ctx)
-				if err == nil {
+				if st, err := e.PVE.ClusterStatus(ctx); err == nil {
 					if n, ok := st.Nodes[e.Target]; ok && n.Online != 1 {
 						e.Log.Infof("%s is offline", e.Target)
 						return nil
@@ -465,11 +492,21 @@ func stepWaitDown() Step {
 				} else {
 					e.Log.Debugf("cluster status unavailable while waiting: %v", err)
 				}
-				if !e.PVE.Reachable(ctx, e.Node.LANIP) && time.Since(deadline) > -e.Opts.TimeoutDown/2 {
-					// The API endpoint stopped answering and corosync has had
-					// time to notice; treat that as down.
-					e.Log.Infof("%s no longer answers on %s", e.Target, e.Node.LANIP)
-					return nil
+				if e.PVE.Reachable(ctx, e.Node.LANIP) {
+					unreachable = 0
+					if before > 0 {
+						if ns, err := e.PVE.NodeStatus(ctx, e.Target); err == nil && ns.Uptime < before {
+							e.Log.Infof("%s has already rebooted (uptime %ds, was %ds)", e.Target, ns.Uptime, before)
+							return nil
+						}
+					}
+				} else {
+					unreachable++
+					e.Log.Debugf("%s did not answer on %s (%d/%d)", e.Target, e.Node.LANIP, unreachable, unreachableProbes)
+					if unreachable >= unreachableProbes {
+						e.Log.Infof("%s stopped answering on %s", e.Target, e.Node.LANIP)
+						return nil
+					}
 				}
 				if time.Now().After(deadline) {
 					return fmt.Errorf("%s still online after %s", e.Target, e.Opts.TimeoutDown)
@@ -585,6 +622,9 @@ func stepRestore() Step {
 			var errs []string
 			if err := undoDrain(ctx, e); err != nil {
 				errs = append(errs, fmt.Sprintf("uncordon: %v", err))
+			}
+			if st := e.State.Step("ceph-flags"); st == nil || st.Data["set_by_us"] == nil {
+				e.Log.Warnf("no record of which ceph flags this maintenance set; leaving them alone -- check `pvectl status` and clear with `pvectl doctor --fix` if needed")
 			}
 			if err := undoCephFlags(ctx, e); err != nil {
 				errs = append(errs, fmt.Sprintf("ceph flags: %v", err))
@@ -707,16 +747,23 @@ func toInts(v any) []int {
 	return nil
 }
 
-// impactSummary is the human-facing "what will break" line used in the Discord
-// announcement and by `plan`.
+// impactSummary is the human-facing "what will break" line for the Discord
+// announcement. It follows the command: maint enter drains and evacuates but
+// stops nothing and powers nothing off.
 func (e *Env) impactSummary() string {
 	var parts []string
+	if e.State != nil && e.State.Command == CmdMaintEnter {
+		parts = append(parts, fmt.Sprintf("%s cordoned and drained", e.Node.Talos.Name))
+		parts = append(parts, "HA resources evacuated")
+		parts = append(parts, "guests keep running, host stays powered")
+		return strings.Join(parts, "; ")
+	}
 	for _, g := range e.Node.StopGuests {
 		if g.Warn != "" {
 			parts = append(parts, fmt.Sprintf("VM %d: %s", g.ID, g.Warn))
 		}
 	}
-	parts = append(parts, fmt.Sprintf("ceph goes degraded (size=3/min_size=2, IO continues)"))
+	parts = append(parts, "ceph goes degraded (size=3/min_size=2, IO continues)")
 	parts = append(parts, fmt.Sprintf("kubernetes loses %s", e.Node.Talos.Name))
 	return strings.Join(parts, "; ")
 }

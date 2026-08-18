@@ -127,8 +127,11 @@ func Preflight(ctx context.Context, e *Env, forShutdown bool) *Report {
 		run("k8s-drain", func() { checkDrain(ctx, e, r) })
 		run("ha-capacity", func() { checkHACapacity(ctx, e, r) })
 		run("tasks", func() { checkTasks(ctx, e, r) })
-		run("guests", func() { checkGuests(ctx, e, r) })
 		if forShutdown {
+			// Both of these are about the host disappearing. maint enter
+			// leaves the guests running and the machine powered, so reporting
+			// "will stop VM 103 -- the Wi-Fi drops" there would be false.
+			run("guests", func() { checkGuests(ctx, e, r) })
 			run("ssh-path", func() { checkSSHPath(e, r) })
 		}
 	}
@@ -435,6 +438,27 @@ func checkGuests(ctx context.Context, e *Env, r *Report) {
 			unknown = append(unknown, fmt.Sprintf("%d %s", id, lr.Name))
 		}
 	}
+	// A guest we stop must come back: either its own onboot brings it up with
+	// the host, or start_after_boot tells restore to start it. Neither means a
+	// reboot silently leaves it off.
+	var orphan []string
+	inStartList := map[int]bool{}
+	for _, id := range e.Node.StartAfterBoot {
+		inStartList[id] = true
+	}
+	for _, g := range e.Node.StopGuests {
+		if inStartList[g.ID] {
+			continue
+		}
+		cfg, err := e.PVEAll.GuestConfig(ctx, e.Target, g.Kind(), g.ID)
+		if err != nil {
+			continue
+		}
+		if onboot, ok := cfg["onboot"]; !ok || fmt.Sprint(onboot) == "0" {
+			orphan = append(orphan, fmt.Sprintf("%d", g.ID))
+		}
+	}
+
 	detail := "no guests configured for " + e.Target
 	switch {
 	case len(running) > 0:
@@ -449,6 +473,9 @@ func checkGuests(ctx context.Context, e *Env, r *Report) {
 	case len(unknown) > 0:
 		r.add("guests", Fail, "%s; passthrough guests missing from the config: %s (run `pvectl config discover`)",
 			detail, strings.Join(unknown, ", "))
+	case len(orphan) > 0:
+		r.add("guests", Fail, "%s; guest %s has no onboot and is not in start_after_boot -- a reboot would leave it stopped",
+			detail, strings.Join(orphan, ", "))
 	case len(warns) > 0:
 		r.add("guests", Warn, "%s -- %s", detail, strings.Join(warns, " / "))
 	default:

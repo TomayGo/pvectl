@@ -251,13 +251,17 @@ func shutdownGuest(ctx context.Context, e *plan.Env, node, kind string, vmid int
 		e.Log.Infof("guest %d on %s is already %s", vmid, node, st.Status)
 		return nil
 	}
-	upid, err := e.PVEAll.GuestShutdown(ctx, node, kind, vmid, e.Opts.TimeoutGuest, false)
+	graceful := e.Opts.TimeoutGuest
+	if e.Opts.ForceStopAfter > 0 {
+		graceful = e.Opts.ForceStopAfter
+	}
+	upid, err := e.PVEAll.GuestShutdown(ctx, node, kind, vmid, graceful, false)
 	if err != nil {
 		return fmt.Errorf("shutdown guest %d on %s: %w", vmid, node, err)
 	}
-	if err := e.PVEAll.WaitTask(ctx, node, upid, e.Opts.TimeoutGuest+time.Minute); err != nil {
+	if err := e.PVEAll.WaitTask(ctx, node, upid, graceful+30*time.Second); err != nil {
 		if e.Opts.ForceStopAfter <= 0 {
-			return fmt.Errorf("guest %d on %s did not shut down: %w (use --force-stop-after)", vmid, node, err)
+			return fmt.Errorf("guest %d on %s did not shut down within %s: %w (use --force-stop-after)", vmid, node, graceful, err)
 		}
 		e.Log.Warnf("guest %d did not stop cleanly (%v); forcing", vmid, err)
 		upid, serr := e.PVEAll.GuestStop(ctx, node, kind, vmid)
