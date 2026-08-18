@@ -4,7 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	plog "github.com/tamago/pvectl/internal/log"
 	"github.com/tamago/pvectl/internal/plan"
+	"github.com/tamago/pvectl/internal/state"
 )
 
 // The same node operation is reachable at two depths: `pvectl reboot node X`
@@ -43,5 +45,62 @@ func TestNodeOpCmdRejectsBadArgs(t *testing.T) {
 	}
 	if err := cmd.Args(cmd, []string{"node", "pve-3", "extra"}); err == nil {
 		t.Error("three arguments should be rejected")
+	}
+}
+
+// `rolling reboot` cannot reboot the node it runs on, so it hands the last one
+// to the operator. A plain `reboot node pve-1` from a peer has to close that
+// record, or the next rolling reboot resumes it and silently skips the nodes
+// the previous run had already done.
+func TestCloseRollingEntry(t *testing.T) {
+	dir := t.TempDir()
+	e := &plan.Env{Target: "pve-1", StateDir: dir, Log: plog.Discard()}
+	prog := &state.Rolling{Order: []string{"pve-3", "pve-2", "pve-1"}, Done: []string{"pve-3", "pve-2"}}
+	if err := prog.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	closeRollingEntry(e, "pve-1")
+
+	got, err := state.LoadRolling(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("finishing the last node should clear the record, still have %v", got.Done)
+	}
+}
+
+func TestCloseRollingEntryKeepsUnfinishedRecord(t *testing.T) {
+	dir := t.TempDir()
+	e := &plan.Env{Target: "pve-2", StateDir: dir, Log: plog.Discard()}
+	prog := &state.Rolling{Order: []string{"pve-3", "pve-2", "pve-1"}, Done: []string{"pve-3"}}
+	if err := prog.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	closeRollingEntry(e, "pve-2")
+	closeRollingEntry(e, "pve-2") // idempotent: must not double-count
+
+	got, err := state.LoadRolling(dir)
+	if err != nil || got == nil {
+		t.Fatalf("record should survive with pve-1 outstanding (%v, %v)", got, err)
+	}
+	if len(got.Done) != 2 {
+		t.Fatalf("Done is %v, want two entries", got.Done)
+	}
+	if rem := got.Remaining(); len(rem) != 1 || rem[0] != "pve-1" {
+		t.Fatalf("remaining is %v, want [pve-1]", rem)
+	}
+}
+
+// With no rolling reboot in flight, a standalone reboot must not invent one.
+func TestCloseRollingEntryNoRecord(t *testing.T) {
+	dir := t.TempDir()
+	e := &plan.Env{Target: "pve-3", StateDir: dir, Log: plog.Discard()}
+	closeRollingEntry(e, "pve-3")
+	got, err := state.LoadRolling(dir)
+	if err != nil || got != nil {
+		t.Fatalf("no record should have been created (%v, %v)", got, err)
 	}
 }

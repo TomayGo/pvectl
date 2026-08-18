@@ -131,12 +131,14 @@ func nodeOpCmd(use, command, short string) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runNodeOp(cmd.Context(), args[len(args)-1], command)
+			return runNodeOp(cmd.Context(), args[len(args)-1], command, false)
 		},
 	}
 }
 
-func runNodeOp(ctx context.Context, target, command string) error {
+// fromRolling says the call comes from `rolling reboot`, which keeps its own
+// progress record; a standalone reboot has to update that record itself.
+func runNodeOp(ctx context.Context, target, command string, fromRolling bool) error {
 	e, lg, err := newEnv(target)
 	if err != nil {
 		return err
@@ -149,7 +151,7 @@ func runNodeOp(ctx context.Context, target, command string) error {
 	}
 	r, err := plan.NewRunner(e, command)
 	if err != nil {
-		e.ReleaseLock()
+		abandonRun(e, false)
 		return err
 	}
 	r.Describe()
@@ -163,18 +165,7 @@ func runNodeOp(ctx context.Context, target, command string) error {
 		e.Log.Plain("(dry run) walking the plan read-only:")
 	}
 	if err := e.Confirm(ctx, confirmPrompt(e, command)); err != nil {
-		e.KeepLock = false
-		if rerr := e.ReleaseLock(); rerr != nil {
-			e.Log.Warnf("%v", rerr)
-		}
-		// NewRunner has already written state.json. Nothing ran, so leaving it
-		// behind would make `status` and `doctor` report a phantom interrupted
-		// run -- but only discard state this run actually created.
-		if !r.Continued && !e.Opts.DryRun {
-			if rerr := state.RemoveState(state.Dir); rerr != nil {
-				e.Log.Warnf("could not clear state.json: %v", rerr)
-			}
-		}
+		abandonRun(e, !r.Continued)
 		return err
 	}
 	start := time.Now()
@@ -189,6 +180,9 @@ func runNodeOp(ctx context.Context, target, command string) error {
 			e.Log.Warnf("could not clear state.json: %v", err)
 		}
 	}
+	if command == plan.CmdReboot && !fromRolling && !e.Opts.DryRun {
+		closeRollingEntry(e, target)
+	}
 	e.Log.Plain("")
 	e.Log.Plain("%s %s completed in %s.", command, target, elapsed(start))
 	if plan.KeepsLockOnSuccess(command) {
@@ -199,6 +193,61 @@ func runNodeOp(ctx context.Context, target, command string) error {
 		e.Log.Plain("transcript: %s", lg.Path)
 	}
 	return nil
+}
+
+// closeRollingEntry marks a node done in an in-flight rolling reboot.
+//
+// `rolling reboot` cannot reboot the node it runs on, so it hands the last one
+// to the operator. Without this the record would never be completed: the next
+// rolling reboot would resume it, treat the already-done nodes as done again,
+// and skip them while reporting success.
+func closeRollingEntry(e *plan.Env, node string) {
+	prog, err := state.LoadRolling(e.StateDir)
+	if err != nil || prog == nil {
+		return
+	}
+	for _, d := range prog.Done {
+		if d == node {
+			return
+		}
+	}
+	prog.Done = append(prog.Done, node)
+	if len(prog.Remaining()) == 0 {
+		if err := state.RemoveRolling(e.StateDir); err != nil {
+			e.Log.Warnf("could not clear rolling.json: %v", err)
+			return
+		}
+		e.Log.Plain("")
+		e.Log.Plain("This completes the rolling reboot of %s.", strings.Join(prog.Order, ", "))
+		return
+	}
+	if err := prog.Save(e.StateDir); err != nil {
+		e.Log.Warnf("could not record rolling progress: %v", err)
+	}
+}
+
+// abandonRun backs out of a run that never executed a step.
+//
+// It must not release a lock this invocation adopted: `start node X` declining
+// its own confirmation would otherwise drop the lock that `shutdown node X`
+// left holding, while X is still powered off and the window still open.
+func abandonRun(e *plan.Env, removeState bool) {
+	if e.Adopted {
+		e.Log.Infof("leaving the adopted maintenance lock in place: %s is still under maintenance", e.Target)
+	} else {
+		e.KeepLock = false
+		if err := e.ReleaseLock(); err != nil {
+			e.Log.Warnf("%v", err)
+		}
+	}
+	// NewRunner has already written state.json. Nothing ran, so leaving it
+	// behind would make `status` and `doctor` report a phantom interrupted
+	// run -- but only discard state this run actually created.
+	if removeState && !e.Opts.DryRun {
+		if err := state.RemoveState(state.Dir); err != nil {
+			e.Log.Warnf("could not clear state.json: %v", err)
+		}
+	}
 }
 
 func closingCommand(command string) string {
@@ -225,6 +274,7 @@ func acquireLock(e *plan.Env, command string) error {
 		e.Log.Infof("adopting the maintenance lock held for %s since %s",
 			lk.Info.Target, lk.Info.Started.Format(time.RFC3339))
 	}
+	e.Adopted = adopted
 	e.Lock = lk
 	return nil
 }

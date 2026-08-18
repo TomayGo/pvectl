@@ -104,7 +104,7 @@ func runRollingReboot(ctx context.Context, restart bool) error {
 		}
 		lg.Plain("")
 		lg.Plain("================ %s ================", node)
-		if err := runNodeOp(ctx, node, plan.CmdReboot); err != nil {
+		if err := runNodeOp(ctx, node, plan.CmdReboot, true); err != nil {
 			saveProgress(prog)
 			return fmt.Errorf("rolling reboot stopped at %s: %w", node, err)
 		}
@@ -415,13 +415,6 @@ func runClusterStart(ctx context.Context) error {
 	}
 	if err := lk.Release(); err != nil {
 		e.Log.Warnf("could not release the maintenance lock: %v", err)
-	}
-	// Only clear run state that belongs to this cluster-wide window; a node's
-	// state.json is none of our business.
-	if !e.Opts.DryRun {
-		if st, _ := state.LoadState(state.Dir); st != nil && st.Target == "cluster" {
-			_ = state.RemoveState(state.Dir)
-		}
 	}
 	lg.Plain("")
 	lg.Plain("Cluster is back in service.")

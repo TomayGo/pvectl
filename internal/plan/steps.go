@@ -68,7 +68,10 @@ func stepSilence() Step {
 			if err != nil {
 				return err
 			}
-			e.State.SetData("silence", "ids", ids)
+			// An abandoned earlier attempt may have left silences recorded
+			// here; overwriting would strand them until they expire on their
+			// own, muting the node long after it is healthy.
+			e.State.SetData("silence", "ids", append(toStrings(dataOf(e, "silence", "ids")), ids...))
 			// A failed Discord post must not stop a maintenance that is
 			// otherwise fine to run.
 			if err := e.Alert.Notify(ctx, "firing", "PvectlMaintenance",
@@ -94,10 +97,12 @@ func undoSilence(ctx context.Context, e *Env) error {
 			}
 		}
 	}
-	if err := e.Alert.Notify(ctx, "resolved", "PvectlMaintenance",
-		fmt.Sprintf("%s: maintenance finished on %s", e.Self, e.Target),
-		"node is back in service", map[string]string{"node": e.Target}); err != nil {
-		e.Log.Warnf("%v", err)
+	if !e.Opts.NoSilence {
+		if err := e.Alert.Notify(ctx, "resolved", "PvectlMaintenance",
+			fmt.Sprintf("%s: maintenance finished on %s", e.Self, e.Target),
+			"node is back in service", map[string]string{"node": e.Target}); err != nil {
+			e.Log.Warnf("%v", err)
+		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
@@ -654,10 +659,11 @@ func stepRestore() Step {
 					errs = append(errs, fmt.Sprintf("start_after_boot: %v", err))
 				}
 			}
-			if !e.Opts.NoSilence {
-				if err := undoSilence(ctx, e); err != nil {
-					errs = append(errs, fmt.Sprintf("silence: %v", err))
-				}
+			// Not gated on --no-silence: that flag says "do not create
+			// silences or notify", and the silences being expired here were
+			// created by the command that opened the window, not this one.
+			if err := undoSilence(ctx, e); err != nil {
+				errs = append(errs, fmt.Sprintf("silence: %v", err))
 			}
 			if len(errs) > 0 {
 				return fmt.Errorf("%s", strings.Join(errs, "; "))

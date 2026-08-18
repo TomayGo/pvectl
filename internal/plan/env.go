@@ -77,6 +77,10 @@ type Env struct {
 	// KeepLock stops the plan from releasing the lock on completion, for the
 	// commands that end with the node still under maintenance.
 	KeepLock bool
+	// Adopted records that the lock was inherited from a window another
+	// invocation opened. Backing out of this run must not drop it: the node it
+	// protects is still off.
+	Adopted bool
 	// StateDir is where the lock and run state live. Overridable so the checks
 	// that read them can be tested without touching /etc/pve.
 	StateDir string
