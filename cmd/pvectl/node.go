@@ -107,20 +107,31 @@ that stays powered, and maint exit to put it back.`),
 	return c
 }
 
-// nodeOpCmd builds `<verb> node <name>`. Every node operation is the same
-// three lines -- build env, take the lock, run the plan -- because they are
-// genuinely the same operation with a different step list.
+// nodeOpCmd builds a node operation. The subcommand appears at two different
+// depths -- `pvectl reboot node pve-3` names it "node", while
+// `pvectl plan reboot node pve-3` names it "reboot" and leaves "node" in the
+// arguments -- so it accepts either shape and takes the node name from the end.
 func nodeOpCmd(use, command, short string) *cobra.Command {
+	usage := use + " <name>"
+	if use != "node" {
+		usage = use + " node <name>"
+	}
 	return &cobra.Command{
-		Use:       use + " node <name>",
-		Short:     short,
-		Args:      cobra.ExactArgs(2),
-		ValidArgs: []string{"node"},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if args[0] != "node" {
-				return fmt.Errorf("expected `%s node <name>`, got %q", use, args[0])
+		Use:   usage,
+		Short: short,
+		Args: func(cmd *cobra.Command, args []string) error {
+			switch {
+			case len(args) == 0:
+				return fmt.Errorf("which node? usage: %s%s", cmd.CommandPath(), strings.TrimPrefix(usage, use))
+			case len(args) > 2:
+				return fmt.Errorf("expected one node name, got %d arguments", len(args))
+			case len(args) == 2 && args[0] != "node":
+				return fmt.Errorf("expected `node <name>`, got %q", args[0])
 			}
-			return runNodeOp(cmd.Context(), args[1], command)
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runNodeOp(cmd.Context(), args[len(args)-1], command)
 		},
 	}
 }
