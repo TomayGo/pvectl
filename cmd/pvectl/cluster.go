@@ -112,6 +112,7 @@ func runRolling(ctx context.Context, command string, restart bool) error {
 	}
 	defer lg.Close()
 	self := plan.Hostname()
+	g.opts.Rolling = true
 	kind := rollingReboot
 	if command == plan.CmdUpgrade {
 		kind = rollingUpgrade

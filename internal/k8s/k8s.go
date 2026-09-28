@@ -8,6 +8,7 @@ package k8s
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -365,6 +366,58 @@ func podReady(p *corev1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// EphemeralPrometheus lists prometheus-operator Prometheus resources whose
+// TSDB has no volume (spec.storage unset), which means an emptyDir.
+//
+// Replicas of such a Prometheus each hold their own copy of the data and do
+// not replicate it. Moving one pod loses that pod's history while the other
+// still has it; a rolling operation moves every replica in turn, and then the
+// history is gone -- which is how 2026-09-28's rolling upgrade lost it.
+// Alertmanager is not listed: its replicas gossip silences to each other, so
+// moving them one at a time loses nothing.
+//
+// A cluster without the CRD simply has nothing to report.
+func (c *Client) EphemeralPrometheus(ctx context.Context) ([]string, error) {
+	cs, err := c.cs()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := cs.CoreV1().RESTClient().Get().AbsPath("/apis/monitoring.coreos.com/v1/prometheuses").DoRaw(ctx)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return ephemeralFromList(raw)
+}
+
+func ephemeralFromList(raw []byte) ([]string, error) {
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Namespace string `json:"namespace"`
+				Name      string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				Storage json.RawMessage `json:"storage"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, fmt.Errorf("decode prometheuses: %w", err)
+	}
+	var out []string
+	for _, p := range list.Items {
+		st := strings.TrimSpace(string(p.Spec.Storage))
+		if st == "" || st == "null" || st == "{}" {
+			out = append(out, p.Metadata.Namespace+"/"+p.Metadata.Name)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // WaitReady blocks until the node reports Ready, or the timeout expires. A

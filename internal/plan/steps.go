@@ -716,18 +716,24 @@ func Settle(ctx context.Context, e *Env, timeout time.Duration) error {
 	}); err != nil {
 		return err
 	}
+	var ignored []string
 	if err := waitFor(ctx, e, deadline, "ceph HEALTH_OK and all PGs active+clean", func() (bool, string) {
 		cs, err := e.PVE.CephStatus(ctx)
 		if err != nil {
 			return false, err.Error()
 		}
 		clean, detail := cs.AllPGsActiveClean()
-		if cs.Health.Status != "HEALTH_OK" {
+		var ok bool
+		if ok, ignored = cs.HealthGate(e.Cfg.Cluster.CephIgnoreHealth); !ok {
 			return false, cs.HealthSummary()
 		}
 		return clean, detail
 	}); err != nil {
 		return err
+	}
+	if len(ignored) > 0 {
+		// Said every time, so an ignored check can never become invisible.
+		e.Log.Warnf("ceph is not HEALTH_OK, but only for ignored checks (ceph_ignore_health): %s", strings.Join(ignored, ", "))
 	}
 	return waitFor(ctx, e, deadline, "all kubernetes nodes Ready", func() (bool, string) {
 		ok, bad, err := e.K8s.AllReady(ctx)

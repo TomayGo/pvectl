@@ -45,6 +45,11 @@ type Options struct {
 	// read when the run starts: from then on state.json is the source.
 	TalosVersion string
 	TalosImage   string
+
+	// Rolling is set when the node operation is one step of a rolling
+	// command, which turns some warnings into refusals: what one reboot
+	// survives, every node in turn does not.
+	Rolling bool
 }
 
 func DefaultOptions() Options {

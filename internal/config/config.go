@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"time"
@@ -32,12 +33,24 @@ type Cluster struct {
 	// on is removed at runtime -- see pve.Client.
 	Endpoints []string `yaml:"endpoints"`
 	// SecretsDir is node-local (0600 root): token, kubeconfig, talosconfig.
-	SecretsDir    string   `yaml:"secrets_dir"`
-	CephFlags     []string `yaml:"ceph_flags"`
-	Alertmanager  Service  `yaml:"alertmanager"`
-	DiscordBridge Service  `yaml:"discord_bridge"`
-	Rolling       Rolling  `yaml:"rolling"`
+	SecretsDir string   `yaml:"secrets_dir"`
+	CephFlags  []string `yaml:"ceph_flags"`
+	// CephIgnoreHealth lists health check codes (globs) that do not bear on
+	// whether a node can be taken down or has come back: they are reported,
+	// but neither preflight nor verify waits on them. Unset means
+	// DefaultCephIgnoreHealth; an explicit empty list ignores nothing.
+	CephIgnoreHealth []string `yaml:"ceph_ignore_health"`
+	Alertmanager     Service  `yaml:"alertmanager"`
+	DiscordBridge    Service  `yaml:"discord_bridge"`
+	Rolling          Rolling  `yaml:"rolling"`
 }
+
+// DefaultCephIgnoreHealth covers the cephx cipher checks Ceph 20.2.4 raises
+// (AUTH_INSECURE_SERVICE_TICKETS and friends, some at ERR). They say keys use
+// the older "aes" cipher -- a hardening item, not an availability one -- and
+// they cannot be cleared while any client lacks aes256k (the Talos kernel
+// before Linux 7.0). Found blocking verify in the 2026-09-28 rolling upgrade.
+var DefaultCephIgnoreHealth = []string{"AUTH_INSECURE_*"}
 
 type Service struct {
 	Namespace string `yaml:"ns"`
@@ -138,6 +151,9 @@ func (c *Config) applyDefaults() {
 	if len(c.Cluster.CephFlags) == 0 {
 		c.Cluster.CephFlags = []string{"noout", "norebalance"}
 	}
+	if c.Cluster.CephIgnoreHealth == nil {
+		c.Cluster.CephIgnoreHealth = DefaultCephIgnoreHealth
+	}
 	if c.Cluster.Rolling.SettleTimeout == 0 {
 		c.Cluster.Rolling.SettleTimeout = Duration(15 * time.Minute)
 	}
@@ -158,6 +174,11 @@ func (c *Config) Validate() []error {
 	}
 	if len(c.Cluster.Endpoints) == 0 {
 		errs = append(errs, fmt.Errorf("cluster.endpoints is empty"))
+	}
+	for _, p := range c.Cluster.CephIgnoreHealth {
+		if _, err := path.Match(p, ""); err != nil {
+			errs = append(errs, fmt.Errorf("cluster.ceph_ignore_health: %q is not a valid pattern: %v", p, err))
+		}
 	}
 	for _, e := range c.Cluster.Endpoints {
 		if net.ParseIP(e) == nil {

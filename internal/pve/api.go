@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -112,6 +113,40 @@ func (s *CephStatus) AllPGsActiveClean() (bool, string) {
 		return true, fmt.Sprintf("%d/%d PGs active+clean", clean, s.PGMap.NumPGs)
 	}
 	return false, fmt.Sprintf("%d/%d PGs active+clean, other: %s", clean, s.PGMap.NumPGs, strings.Join(other, " "))
+}
+
+// HealthGate says whether Ceph's health is acceptable for maintenance to
+// start or finish, given check codes that may be ignored (glob patterns such
+// as "AUTH_INSECURE_*").
+//
+// Only listed codes are ever ignored, and ignored lists them back so callers
+// always say what they looked past. Muted checks never appear here: Ceph drops
+// them from the report itself.
+func (s *CephStatus) HealthGate(ignore []string) (ok bool, ignored []string) {
+	if s.Health.Status == "HEALTH_OK" {
+		return true, nil
+	}
+	if len(s.Health.Checks) == 0 {
+		// Not OK, yet no check to blame: nothing to judge by, so not OK.
+		return false, nil
+	}
+	for code := range s.Health.Checks {
+		if !matchesAny(code, ignore) {
+			return false, nil
+		}
+		ignored = append(ignored, code)
+	}
+	sort.Strings(ignored)
+	return true, ignored
+}
+
+func matchesAny(code string, patterns []string) bool {
+	for _, p := range patterns {
+		if ok, _ := path.Match(p, code); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *CephStatus) HealthSummary() string {

@@ -55,3 +55,37 @@ func TestRetryableStatus(t *testing.T) {
 		}
 	}
 }
+
+func statusWith(health string, codes ...string) *CephStatus {
+	s := &CephStatus{}
+	s.Health.Status = health
+	s.Health.Checks = map[string]struct {
+		Severity string `json:"severity"`
+		Summary  struct {
+			Message string `json:"message"`
+		} `json:"summary"`
+	}{}
+	for _, c := range codes {
+		s.Health.Checks[c] = s.Health.Checks[c]
+	}
+	return s
+}
+
+// The state after the 2026-09-28 upgrade: only cephx cipher checks, at ERR.
+func TestHealthGateIgnoresOnlyListedChecks(t *testing.T) {
+	ignore := []string{"AUTH_INSECURE_*"}
+	s := statusWith("HEALTH_ERR", "AUTH_INSECURE_SERVICE_TICKETS", "AUTH_INSECURE_CLIENT_KEY_TYPE")
+	if ok, ign := s.HealthGate(ignore); !ok || len(ign) != 2 {
+		t.Fatalf("cipher-only ERR should pass, got %v %v", ok, ign)
+	}
+	s = statusWith("HEALTH_WARN", "AUTH_INSECURE_SERVICE_TICKETS", "OSD_DOWN")
+	if ok, _ := s.HealthGate(ignore); ok {
+		t.Fatal("an unlisted check must still block")
+	}
+	if ok, _ := statusWith("HEALTH_WARN").HealthGate(ignore); ok {
+		t.Fatal("not OK with no checks to judge must block")
+	}
+	if ok, _ := statusWith("HEALTH_ERR", "AUTH_INSECURE_SERVICE_TICKETS").HealthGate(nil); ok {
+		t.Fatal("with nothing ignored, the cipher check blocks as before")
+	}
+}

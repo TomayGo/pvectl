@@ -89,7 +89,12 @@ back. Both read the same `state.json`, so neither can invent a different plan.
 Preflight blocks, and says why, when:
 
 - another node is already down or another maintenance holds the lock
-- Ceph is not `HEALTH_OK`, or any PG is not `active+clean`
+- Ceph is not `HEALTH_OK`, or any PG is not `active+clean` -- except for check
+  codes listed in `cluster.ceph_ignore_health` (default `AUTH_INSECURE_*`, the
+  cephx cipher checks Ceph 20.2.4 raises), which are reported but not waited on;
+  verify applies the same rule
+- a Prometheus keeps its TSDB in emptyDir (`ephemeral-data`): a warning for one
+  node, a refusal for a rolling operation, which moves every replica
 - flags are left set from an earlier run that never finished
 - a PodDisruptionBudget would make the drain hang
 - etcd is not 3/3

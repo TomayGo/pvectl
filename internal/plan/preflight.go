@@ -77,6 +77,7 @@ var CheckNames = []string{
 	"tasks",
 	"guests",
 	"ssh-path",
+	"ephemeral-data",
 	// upgrade only
 	"apt-plan",
 	"talos-target",
@@ -131,6 +132,7 @@ func Preflight(ctx context.Context, e *Env, forShutdown bool) *Report {
 		run("k8s-drain", func() { checkDrain(ctx, e, r) })
 		run("ha-capacity", func() { checkHACapacity(ctx, e, r) })
 		run("tasks", func() { checkTasks(ctx, e, r) })
+		run("ephemeral-data", func() { checkEphemeralData(ctx, e, r) })
 		if forShutdown {
 			// Both of these are about the host disappearing. maint enter
 			// leaves the guests running and the machine powered, so reporting
@@ -227,12 +229,17 @@ func checkCephHealth(ctx context.Context, e *Env, r *Report) {
 		r.add("ceph-health", Fail, "cannot read ceph status: %v", err)
 		return
 	}
-	if cs.Health.Status != "HEALTH_OK" {
+	ok, ignored := cs.HealthGate(e.Cfg.Cluster.CephIgnoreHealth)
+	switch {
+	case !ok:
 		r.add("ceph-health", Fail, "%s", cs.HealthSummary())
-		return
+	case len(ignored) > 0:
+		r.add("ceph-health", Warn, "%s, but only for checks that do not affect availability (ceph_ignore_health): %s; %d/%d OSDs up and in",
+			cs.Health.Status, strings.Join(ignored, ", "), cs.OSDMap.NumUpOSDs, cs.OSDMap.NumOSDs)
+	default:
+		r.add("ceph-health", Pass, "HEALTH_OK, %d/%d OSDs up and in",
+			cs.OSDMap.NumUpOSDs, cs.OSDMap.NumOSDs)
 	}
-	r.add("ceph-health", Pass, "HEALTH_OK, %d/%d OSDs up and in",
-		cs.OSDMap.NumUpOSDs, cs.OSDMap.NumOSDs)
 }
 
 func checkCephPGs(ctx context.Context, e *Env, r *Report) {
@@ -573,4 +580,26 @@ func humanBytes(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f%ciB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// checkEphemeralData looks for replicated workloads that keep their data in
+// emptyDir without replicating it (see k8s.EphemeralPrometheus). One node's
+// maintenance costs such a replica its history and the others keep theirs; a
+// rolling operation costs all of them, so there it is a refusal.
+func checkEphemeralData(ctx context.Context, e *Env, r *Report) {
+	eph, err := e.K8s.EphemeralPrometheus(ctx)
+	if err != nil {
+		r.add("ephemeral-data", Warn, "cannot list Prometheus resources: %v", err)
+		return
+	}
+	if len(eph) == 0 {
+		r.add("ephemeral-data", Pass, "every Prometheus keeps its TSDB on a volume")
+		return
+	}
+	msg := fmt.Sprintf("Prometheus without spec.storage (TSDB in emptyDir): %s -- a pod that moves loses its history", strings.Join(eph, ", "))
+	if e.Opts.Rolling {
+		r.add("ephemeral-data", Fail, "%s, and a rolling operation moves every replica: the whole history would be lost", msg)
+		return
+	}
+	r.add("ephemeral-data", Warn, "%s; the other replica keeps it, but not across a rolling operation", msg)
 }

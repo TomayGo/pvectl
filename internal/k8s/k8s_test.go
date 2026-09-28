@@ -78,3 +78,19 @@ func TestCNPGPrimaryWithoutUsableReplicaStaysBlocked(t *testing.T) {
 		}
 	}
 }
+
+// The Prometheus as it was until 2026-09-28 (no storage) and as it is now.
+func TestEphemeralFromList(t *testing.T) {
+	raw := []byte(`{"items":[
+	 {"metadata":{"namespace":"monitoring","name":"old"},"spec":{"replicas":2,"retention":"15d"}},
+	 {"metadata":{"namespace":"monitoring","name":"empty"},"spec":{"storage":{}}},
+	 {"metadata":{"namespace":"monitoring","name":"kube-prometheus-stack-prometheus"},
+	  "spec":{"storage":{"volumeClaimTemplate":{"spec":{"storageClassName":"ceph-rbd"}}}}}]}`)
+	got, err := ephemeralFromList(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "monitoring/empty" || got[1] != "monitoring/old" {
+		t.Fatalf("got %v", got)
+	}
+}
