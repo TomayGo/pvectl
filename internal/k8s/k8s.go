@@ -218,6 +218,10 @@ type DrainPreviewResult struct {
 	// are only enforced at eviction time, and a drain that trips one hangs
 	// until the timeout.
 	Blocked []PodRef
+	// Handovers are PDB-protected pods whose owner moves them out of the way
+	// once the node is cordoned -- a CloudNativePG primary with a healthy
+	// replica elsewhere. The PDB reads 0 now and will not after the cordon.
+	Handovers []PodRef
 	// Refusals are the filter errors GetPodsForDeletion returns -- an
 	// unmanaged pod, a DaemonSet pod we are not ignoring. RunNodeDrain fails
 	// on exactly these, so they are blockers, not advisories.
@@ -245,25 +249,27 @@ func (c *Client) DrainPreview(ctx context.Context, name string, timeout time.Dur
 	for _, p := range list.Pods() {
 		res.Evictable = append(res.Evictable, PodRef{Namespace: p.Namespace, Name: p.Name})
 	}
-	blocked, err := c.pdbBlockers(ctx, list.Pods())
+	blocked, handovers, err := c.pdbBlockers(ctx, name, list.Pods())
 	if err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("PDB check incomplete: %v", err))
 	}
 	res.Blocked = blocked
+	res.Handovers = handovers
 	sort.Slice(res.Evictable, func(i, j int) bool { return res.Evictable[i].String() < res.Evictable[j].String() })
 	return res, nil
 }
 
 // pdbBlockers finds pods covered by a PDB that currently permits no
-// disruptions. Those are exactly the ones that would make drain spin.
-func (c *Client) pdbBlockers(ctx context.Context, pods []corev1.Pod) ([]PodRef, error) {
+// disruptions. Those are exactly the ones that would make drain spin -- unless
+// the cordon itself changes the answer, which is what handovers are.
+func (c *Client) pdbBlockers(ctx context.Context, node string, pods []corev1.Pod) (blocked, handovers []PodRef, err error) {
 	namespaces := map[string]bool{}
 	for _, p := range pods {
 		namespaces[p.Namespace] = true
 	}
 	cs, err := c.cs()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	byNS := map[string][]policyv1.PodDisruptionBudget{}
 	for ns := range namespaces {
@@ -272,11 +278,10 @@ func (c *Client) pdbBlockers(ctx context.Context, pods []corev1.Pod) ([]PodRef, 
 			if apierrors.IsForbidden(err) || apierrors.IsNotFound(err) {
 				continue
 			}
-			return nil, err
+			return nil, nil, err
 		}
 		byNS[ns] = l.Items
 	}
-	var out []PodRef
 	for _, p := range pods {
 		for i := range byNS[p.Namespace] {
 			pdb := &byNS[p.Namespace][i]
@@ -287,18 +292,79 @@ func (c *Client) pdbBlockers(ctx context.Context, pods []corev1.Pod) ([]PodRef, 
 			if sel.Empty() || !sel.Matches(labels.Set(p.Labels)) {
 				continue
 			}
-			if pdb.Status.DisruptionsAllowed <= 0 {
-				out = append(out, PodRef{
+			if pdb.Status.DisruptionsAllowed > 0 {
+				continue
+			}
+			if to, ok := c.cnpgSwitchoverTarget(ctx, node, &p); ok {
+				handovers = append(handovers, PodRef{
 					Namespace: p.Namespace,
 					Name:      p.Name,
-					Reason: fmt.Sprintf("pdb %s allows %d disruptions (%d/%d healthy)",
-						pdb.Name, pdb.Status.DisruptionsAllowed,
-						pdb.Status.CurrentHealthy, pdb.Status.DesiredHealthy),
+					Reason: fmt.Sprintf("CloudNativePG primary; the cordon makes the operator switch over to %s, "+
+						"after which pdb %s no longer covers it", to, pdb.Name),
 				})
+				continue
 			}
+			blocked = append(blocked, PodRef{
+				Namespace: p.Namespace,
+				Name:      p.Name,
+				Reason: fmt.Sprintf("pdb %s allows %d disruptions (%d/%d healthy)",
+					pdb.Name, pdb.Status.DisruptionsAllowed,
+					pdb.Status.CurrentHealthy, pdb.Status.DesiredHealthy),
+			})
 		}
 	}
-	return out, nil
+	return blocked, handovers, nil
+}
+
+// cnpgSwitchoverTarget reports whether pod is a CloudNativePG primary that the
+// operator will move off node by itself.
+//
+// CNPG guards its primary with a PDB selecting instanceRole=primary, which by
+// construction always allows 0 disruptions. It does not need to: when the
+// primary's node turns unschedulable, the operator switches over to a replica
+// on a schedulable node (internal/controller/replicas.go, "Primary is running
+// on an unschedulable node, will try switching over"), the old primary is
+// relabelled replica, the PDB stops selecting it, and the drain -- which keeps
+// retrying refused evictions until its timeout -- goes through.
+//
+// That only holds with somewhere to switch to, so this demands a Ready replica
+// of the same cluster on another node that is itself schedulable. Anything
+// less stays a blocker.
+func (c *Client) cnpgSwitchoverTarget(ctx context.Context, node string, p *corev1.Pod) (string, bool) {
+	cluster := p.Labels["cnpg.io/cluster"]
+	if cluster == "" || p.Labels["cnpg.io/instanceRole"] != "primary" {
+		return "", false
+	}
+	cs, err := c.cs()
+	if err != nil {
+		return "", false
+	}
+	peers, err := cs.CoreV1().Pods(p.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "cnpg.io/cluster=" + cluster + ",cnpg.io/instanceRole=replica",
+	})
+	if err != nil {
+		return "", false
+	}
+	for _, r := range peers.Items {
+		if r.Spec.NodeName == "" || r.Spec.NodeName == node || !podReady(&r) {
+			continue
+		}
+		n, err := cs.CoreV1().Nodes().Get(ctx, r.Spec.NodeName, metav1.GetOptions{})
+		if err != nil || n.Spec.Unschedulable {
+			continue
+		}
+		return fmt.Sprintf("%s on %s", r.Name, r.Spec.NodeName), true
+	}
+	return "", false
+}
+
+func podReady(p *corev1.Pod) bool {
+	for _, c := range p.Status.Conditions {
+		if c.Type == corev1.PodReady {
+			return c.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 // WaitReady blocks until the node reports Ready, or the timeout expires. A

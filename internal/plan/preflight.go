@@ -311,6 +311,9 @@ func checkDrain(ctx context.Context, e *Env, r *Report) {
 		return
 	}
 	detail := fmt.Sprintf("%d pod(s) would be evicted from %s", len(prev.Evictable), e.Node.Talos.Name)
+	for _, h := range prev.Handovers {
+		prev.Warnings = append(prev.Warnings, h.String()+": "+h.Reason)
+	}
 	if len(prev.Warnings) > 0 {
 		r.add("k8s-drain", Warn, "%s; %s", detail, strings.Join(prev.Warnings, "; "))
 		return
