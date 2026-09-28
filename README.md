@@ -20,11 +20,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=$
 | path | what | permissions |
 |---|---|---|
 | `/usr/local/bin/pvectl` | the static binary (~58 MB) | 0755 |
+| `/usr/share/bash-completion/completions/pvectl` | `pvectl completion bash` output | 0644 |
 | `/etc/pve/pvectl/config.yaml` | topology, no secrets | root:www-data 0640 (pmxcfs) |
 | `/etc/pve/pvectl/maintenance.lock` | the cluster lock | created by pvectl |
 | `/etc/pve/pvectl/state.json` | resumable run state | created by pvectl |
 | `/etc/pvectl/{token,kubeconfig,talosconfig}` | credentials, node-local | 0600 root |
 | `/var/log/pvectl/<timestamp>.log` | one transcript per run | 0640 root |
+
+The completion script only calls back into the binary (`pvectl __complete`),
+so it never needs regenerating: node names come from the live config and new
+subcommands appear as soon as the new binary is in place.
 
 Secrets are node-local on purpose: `/etc/pve` is `root:www-data 0640` and
 pveproxy (port 8006) runs as `www-data`, so anything placed there is readable by
@@ -40,6 +45,27 @@ pvectl reboot node pve-3            # the real thing, end to end
 pvectl rolling reboot cluster       # one node at a time, for kernel updates
 pvectl doctor --fix                 # clear leftovers from an interrupted run
 ```
+
+Upgrades are a reboot with the installs slotted in after the drain:
+
+```bash
+pvectl plan upgrade node pve-3 --talos-version v1.13.7   # what would be installed
+pvectl upgrade node pve-3 --talos-version v1.13.7        # one node
+pvectl rolling upgrade cluster --talos-version v1.13.7   # every node, one at a time
+```
+
+Per node: drain -> Talos release written to the VM's inactive boot slot ->
+`apt-get update && full-upgrade` on the host -> one reboot that boots both ->
+restore -> verify -> `upgrade-check` (did Talos actually boot the new release).
+Without `--talos-version` only the host is upgraded. `--talos-image` names the
+installer exactly; otherwise it is the node's `machine.install.image` with the
+tag replaced, which keeps the Image Factory schematic (qemu-guest-agent).
+Kubernetes itself (`talosctl upgrade-k8s`) is not part of it.
+
+The upgrade refuses, in preflight and again after `apt-get update`, a
+full-upgrade that would remove a package or change the major version of Ceph or
+pve-manager, and a Talos target that is a downgrade or does not exist in the
+registry. A continued rolling upgrade keeps the Talos release it started with.
 
 A shutdown leaves the window open, so it is two commands:
 
@@ -73,7 +99,10 @@ Each check has a name that `--skip-check` accepts, listed by `pvectl --help`.
 
 ## Notes on the implementation
 
-- **All Proxmox work goes through the API**, never ssh or `ceph`/`ha-manager`.
+- **All Proxmox work goes through the API**, never ssh or `ceph`/`ha-manager` --
+  with one exception: `upgrade` runs apt over `ssh root@<lan_ip>`, because the
+  API's only way to install packages is the web UI's interactive terminal. It
+  uses the root ssh trust PVE itself sets up between cluster nodes.
   Requests aimed at a node are sent through a *different* node's pveproxy: a
   `POST /nodes/pve-1/status --command shutdown` delivered to pve-1 loses its
   connection before the reply arrives.
@@ -102,4 +131,5 @@ go test ./...
 
 Covers the parts that cannot be exercised safely against the live cluster: the
 lock's exclusion and adoption, state round-trips through JSON, WoL packet
-construction, silence-matcher regex escaping, and the shape of each plan.
+construction, silence-matcher regex escaping, the shape of each plan, apt
+simulation parsing and its refusal rules, and installer-image tag handling.

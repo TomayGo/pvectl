@@ -1,8 +1,8 @@
 // Package plan turns a maintenance operation into an ordered list of steps and
 // runs them.
 //
-// Every operation -- shutdown, reboot, start, maint enter/exit, rolling reboot
-// -- is the same []Step structure executed by the same runner. --dry-run,
+// Every operation -- shutdown, reboot, upgrade, start, maint enter/exit,
+// rolling reboot/upgrade -- is the same []Step structure executed by the same runner. --dry-run,
 // resume and abort are not separate code paths but three ways of walking that
 // one structure, which is what keeps them from drifting apart.
 package plan
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/tamago/pvectl/internal/alert"
+	"github.com/tamago/pvectl/internal/apt"
 	"github.com/tamago/pvectl/internal/config"
 	"github.com/tamago/pvectl/internal/k8s"
 	plog "github.com/tamago/pvectl/internal/log"
@@ -39,6 +40,11 @@ type Options struct {
 	// SilenceFor bounds the Alertmanager silence so a crashed run cannot
 	// leave the cluster permanently muted.
 	SilenceFor time.Duration
+
+	// TalosVersion / TalosImage name the release `upgrade` installs. Only
+	// read when the run starts: from then on state.json is the source.
+	TalosVersion string
+	TalosImage   string
 }
 
 func DefaultOptions() Options {
@@ -67,6 +73,7 @@ type Env struct {
 	K8s    *k8s.Client
 	Talos  *talos.Client
 	Alert  *alert.Client
+	Apt    *apt.Client
 	// PVEAll keeps the unfiltered client, for the few calls that must be able
 	// to reach the target itself (reading its guest list before it goes down).
 	PVEAll *pve.Client
@@ -178,6 +185,7 @@ func NewEnv(cfg *config.Config, target string, lg *plog.Logger, opts Options) (*
 	kc := k8s.New(cfg.SecretPath("kubeconfig"), lg, opts.DryRun)
 	e.K8s = kc
 	e.Talos = talos.New(cfg.SecretPath("talosconfig"), lg, opts.DryRun)
+	e.Apt = apt.New(lg, opts.DryRun)
 	e.Alert = alert.New(kc,
 		alert.Endpoint{Namespace: cfg.Cluster.Alertmanager.Namespace, Service: cfg.Cluster.Alertmanager.Service, Port: cfg.Cluster.Alertmanager.Port},
 		alert.Endpoint{Namespace: cfg.Cluster.DiscordBridge.Namespace, Service: cfg.Cluster.DiscordBridge.Service, Port: cfg.Cluster.DiscordBridge.Port},

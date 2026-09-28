@@ -109,15 +109,44 @@ func TestCloseRollingEntryNoRecord(t *testing.T) {
 // `shutdown` leaves the window open; the `start` that closes it is what counts,
 // and `resume` rescuing an interrupted reboot has to count too.
 func TestClosesRollingEntry(t *testing.T) {
-	for _, c := range []string{plan.CmdReboot, plan.CmdStart, plan.CmdMaintExit} {
-		if !closesRollingEntry(c) {
+	for _, c := range []string{plan.CmdReboot, plan.CmdUpgrade, plan.CmdStart, plan.CmdMaintExit} {
+		if !closesRollingEntry(rollingReboot, c) {
 			t.Errorf("%s should close the rolling entry", c)
 		}
 	}
 	for _, c := range []string{plan.CmdShutdown, plan.CmdMaintEnter} {
-		if closesRollingEntry(c) {
+		if closesRollingEntry(rollingReboot, c) {
 			t.Errorf("%s leaves the node out of service and must not close the entry", c)
 		}
+	}
+}
+
+// A rolling upgrade is only advanced by an upgrade: counting a plain reboot
+// would mark a node done that never installed anything.
+func TestRollingUpgradeClosedOnlyByUpgrade(t *testing.T) {
+	if !closesRollingEntry(rollingUpgrade, plan.CmdUpgrade) {
+		t.Fatal("upgrade must close a rolling-upgrade entry")
+	}
+	for _, c := range []string{plan.CmdReboot, plan.CmdStart, plan.CmdMaintExit, plan.CmdShutdown} {
+		if closesRollingEntry(rollingUpgrade, c) {
+			t.Errorf("%s must not close a rolling-upgrade entry", c)
+		}
+	}
+}
+
+// Continuing a rolling upgrade without the flag inherits the recorded release;
+// naming a different one is refused rather than producing a mixed cluster.
+func TestAdoptRecordedTalosTarget(t *testing.T) {
+	defer func(o plan.Options) { g.opts = o }(g.opts)
+	prog := &state.Rolling{Command: rollingUpgrade, TalosVersion: "v1.13.7"}
+
+	g.opts.TalosVersion, g.opts.TalosImage = "", ""
+	if err := adoptRecordedTalosTarget(prog); err != nil || g.opts.TalosVersion != "v1.13.7" {
+		t.Fatalf("recorded version not inherited: %v %q", err, g.opts.TalosVersion)
+	}
+	g.opts.TalosVersion = "v1.14.0"
+	if err := adoptRecordedTalosTarget(prog); err == nil {
+		t.Fatal("a different release must be refused")
 	}
 }
 

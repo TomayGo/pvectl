@@ -78,7 +78,7 @@ func showStatus(ctx context.Context, e *plan.Env) error {
 		}
 	}
 	if roll, err := state.LoadRolling(state.Dir); err == nil && roll != nil {
-		lg.Plain("rolling reboot   : done %s; remaining %s",
+		lg.Plain("%-17s: done %s; remaining %s", rollingWhat(roll.Command),
 			strings.Join(roll.Done, ", "), strings.Join(roll.Remaining(), ", "))
 	}
 	lg.Plain("")

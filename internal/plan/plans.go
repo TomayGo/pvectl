@@ -15,6 +15,7 @@ const (
 	CmdShutdown   = "shutdown"
 	CmdReboot     = "reboot"
 	CmdStart      = "start"
+	CmdUpgrade    = "upgrade"
 )
 
 // maintEnterSteps is the shared prefix: everything that makes a node safe to
@@ -48,6 +49,11 @@ func StepsFor(command string, e *Env) ([]Step, error) {
 		steps := append(maintEnterSteps(e, true), stepTalosStop(), stepGuestStop())
 		steps = append(steps, hostPowerAndWait("reboot")...)
 		return append(steps, stepWaitUp(), stepRestore(), stepVerify()), nil
+	case CmdUpgrade:
+		// The installs sit between the drain and talos-stop; see upgrade.go.
+		steps := append(maintEnterSteps(e, true), stepTalosUpgrade(), stepHostUpgrade(), stepTalosStop(), stepGuestStop())
+		steps = append(steps, hostPowerAndWait("reboot")...)
+		return append(steps, stepWaitUp(), stepRestore(), stepVerify(), stepUpgradeCheck()), nil
 	case CmdStart:
 		return []Step{
 			stepLock(),
@@ -139,6 +145,9 @@ func NewRunner(e *Env, command string) (*Runner, error) {
 			}
 		}
 		e.State = fresh
+	}
+	if command == CmdUpgrade {
+		recordUpgradeRequest(e)
 	}
 	e.State.SetDryRun(e.Opts.DryRun)
 	if err := e.State.Save(); err != nil {

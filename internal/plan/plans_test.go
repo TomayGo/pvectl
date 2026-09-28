@@ -30,3 +30,29 @@ func TestCarryRollbackData(t *testing.T) {
 		t.Fatal("a step absent from the new plan must not be added")
 	}
 }
+
+// An upgrade installs after the drain and before anything is stopped, so a
+// failed install leaves a drained node that abort can simply put back.
+func TestUpgradeInstallsBeforeStopping(t *testing.T) {
+	e := &Env{Cfg: minimalConfig()}
+	steps, err := StepsFor(CmdUpgrade, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pos := map[string]int{}
+	for i, s := range steps {
+		pos[s.Name] = i
+	}
+	for _, name := range []string{"k8s-drain", "talos-upgrade", "host-upgrade", "talos-stop", "host-reboot", "verify", "upgrade-check"} {
+		if _, ok := pos[name]; !ok {
+			t.Fatalf("upgrade plan has no %s step", name)
+		}
+	}
+	if !(pos["k8s-drain"] < pos["talos-upgrade"] && pos["talos-upgrade"] < pos["host-upgrade"] &&
+		pos["host-upgrade"] < pos["talos-stop"] && pos["verify"] < pos["upgrade-check"]) {
+		t.Fatalf("steps out of order: %v", pos)
+	}
+	if KeepsLockOnSuccess(CmdUpgrade) {
+		t.Fatal("upgrade ends with the node back in service")
+	}
+}

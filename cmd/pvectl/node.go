@@ -21,7 +21,8 @@ Runs every read-only check that a shutdown would run. With a node name it also
 runs the node-specific ones: drain preview, HA capacity on the remaining nodes,
 running backups, passthrough guests and whether your own connection depends on
 the node you are asking about.`),
-		Args: cobra.MaximumNArgs(1),
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeNodeOptional,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := ""
 			if len(args) == 1 {
@@ -63,6 +64,7 @@ func newPlanCmd() *cobra.Command {
 		nodeOpCmd("shutdown", plan.CmdShutdown, "Plan a node shutdown"),
 		nodeOpCmd("reboot", plan.CmdReboot, "Plan a node reboot"),
 		nodeOpCmd("start", plan.CmdStart, "Plan a node start"),
+		withTalosFlags(nodeOpCmd("upgrade", plan.CmdUpgrade, "Plan a node upgrade")),
 	)
 	maint := &cobra.Command{Use: "maint", Short: "Plan entering or leaving maintenance"}
 	maint.AddCommand(
@@ -83,6 +85,33 @@ func newShutdownCmd() *cobra.Command {
 func newRebootCmd() *cobra.Command {
 	c := &cobra.Command{Use: "reboot", Short: "Reboot a node and put it back in service"}
 	c.AddCommand(nodeOpCmd("node", plan.CmdReboot, "Reboot one node and restore it"))
+	return c
+}
+
+func newUpgradeCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "upgrade",
+		Short: "Upgrade a node's packages (and optionally Talos), then reboot it",
+		Long: strings.TrimSpace(`
+upgrade is reboot with two installs after the drain: apt-get update and
+full-upgrade on the PVE host, and -- with --talos-version -- the new Talos
+release written to the Talos VM's inactive boot slot. Neither reboots anything
+itself; the host reboot that follows boots both, so the node goes down once.
+
+The run refuses a full-upgrade that would remove packages or change the major
+version of Ceph or pve-manager: those need a human and their own procedure.`),
+	}
+	c.AddCommand(withTalosFlags(nodeOpCmd("node", plan.CmdUpgrade, "Upgrade one node and reboot it")))
+	return c
+}
+
+// withTalosFlags binds the Talos target flags straight into the global
+// options, which is where plan.NewRunner reads them from.
+func withTalosFlags(c *cobra.Command) *cobra.Command {
+	c.Flags().StringVar(&g.opts.TalosVersion, "talos-version", "",
+		"also upgrade Talos to this release (e.g. v1.13.7), keeping the node's Image Factory schematic")
+	c.Flags().StringVar(&g.opts.TalosImage, "talos-image", "",
+		"also upgrade Talos using exactly this installer image (instead of --talos-version)")
 	return c
 }
 
@@ -117,8 +146,9 @@ func nodeOpCmd(use, command, short string) *cobra.Command {
 		usage = use + " node <name>"
 	}
 	return &cobra.Command{
-		Use:   usage,
-		Short: short,
+		Use:               usage,
+		Short:             short,
+		ValidArgsFunction: completeNodeOp(use),
 		Args: func(cmd *cobra.Command, args []string) error {
 			switch {
 			case len(args) == 0:
@@ -204,20 +234,27 @@ func runNodeOp(ctx context.Context, target, command string, fromRolling bool) er
 // Only the commands that leave a node back in service close its entry;
 // `shutdown` and `maint enter` leave the window open, and the `start` /
 // `maint exit` that closes it is what counts.
-func closesRollingEntry(command string) bool {
+//
+// A rolling upgrade is only advanced by an upgrade: a plain reboot of that node
+// installs nothing, and counting it would leave the node on the old packages
+// while the record says it is done.
+func closesRollingEntry(rolling, command string) bool {
+	if rolling == rollingUpgrade {
+		return command == plan.CmdUpgrade
+	}
 	switch command {
-	case plan.CmdReboot, plan.CmdStart, plan.CmdMaintExit:
+	case plan.CmdReboot, plan.CmdUpgrade, plan.CmdStart, plan.CmdMaintExit:
 		return true
 	}
 	return false
 }
 
 func closeRollingEntry(e *plan.Env, command, node string) {
-	if !closesRollingEntry(command) {
-		return
-	}
 	prog, err := state.LoadRolling(e.StateDir)
 	if err != nil || prog == nil {
+		return
+	}
+	if !closesRollingEntry(prog.Command, command) {
 		return
 	}
 	for _, d := range prog.Done {
@@ -232,7 +269,7 @@ func closeRollingEntry(e *plan.Env, command, node string) {
 			return
 		}
 		e.Log.Plain("")
-		e.Log.Plain("This completes the rolling reboot of %s.", strings.Join(prog.Order, ", "))
+		e.Log.Plain("This completes the %s of %s.", rollingWhat(prog.Command), strings.Join(prog.Order, ", "))
 		return
 	}
 	if err := prog.Save(e.StateDir); err != nil {
@@ -318,6 +355,17 @@ func impactLines(e *plan.Env, command string) string {
 	}
 	fmt.Fprintf(&b, "  - Ceph goes degraded (size=3, min_size=2): IO continues, recovery is deferred by noout\n")
 	fmt.Fprintf(&b, "  - Kubernetes loses %s; its pods move to the other two nodes\n", e.Node.Talos.Name)
+	if command == plan.CmdUpgrade {
+		fmt.Fprintf(&b, "  - apt-get full-upgrade runs on %s (refused if it would remove packages)\n", e.Target)
+		switch {
+		case e.Opts.TalosVersion != "":
+			fmt.Fprintf(&b, "  - %s is upgraded to Talos %s\n", e.Node.Talos.Name, e.Opts.TalosVersion)
+		case e.Opts.TalosImage != "":
+			fmt.Fprintf(&b, "  - %s is upgraded to %s\n", e.Node.Talos.Name, e.Opts.TalosImage)
+		default:
+			fmt.Fprintf(&b, "  - Talos is not upgraded (no --talos-version)\n")
+		}
+	}
 	if command == plan.CmdShutdown {
 		fmt.Fprintf(&b, "  - The host stays off until `pvectl start node %s`\n", e.Target)
 	}

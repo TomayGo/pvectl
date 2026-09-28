@@ -20,6 +20,20 @@ import (
 // IO while the cluster is in pieces.
 var freezeFlags = []string{"noout", "norecover", "norebalance", "nobackfill", "nodown", "pause"}
 
+// Values of Rolling.Command. rolling-reboot predates the upgrade and is what
+// existing rolling.json files say, so it must not change.
+const (
+	rollingReboot  = "rolling-reboot"
+	rollingUpgrade = "rolling-upgrade"
+)
+
+func rollingWhat(command string) string {
+	if command == rollingUpgrade {
+		return "rolling upgrade"
+	}
+	return "rolling reboot"
+}
+
 func newRollingCmd() *cobra.Command {
 	c := &cobra.Command{Use: "rolling", Short: "Cluster-wide sequential operations"}
 	reboot := &cobra.Command{
@@ -33,30 +47,71 @@ corosync quorum and all kubernetes nodes Ready before starting the next.
 It cannot reboot the node it is running on -- the process would die before the
 restore steps -- so it stops there and prints the command to run from a peer.
 Progress is recorded, so re-running it continues where it left off.`),
-		Args: cobra.ExactArgs(1),
+		Args:              rollingArgs,
+		ValidArgsFunction: completeCluster,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if args[0] != "cluster" {
-				return fmt.Errorf("expected `rolling reboot cluster`, got %q", args[0])
-			}
 			restart, err := cmd.Flags().GetBool("restart")
 			if err != nil {
 				return err
 			}
-			return runRollingReboot(cmd.Context(), restart)
+			return runRolling(cmd.Context(), plan.CmdReboot, restart)
 		},
 	}
 	reboot.Flags().Bool("restart", false, "discard recorded progress and start from the first node")
-	c.AddCommand(reboot)
+
+	upgrade := &cobra.Command{
+		Use:   "upgrade cluster",
+		Short: "Upgrade and reboot every node one at a time (apt full-upgrade, optionally Talos)",
+		Long: strings.TrimSpace(`
+Runs the single-node upgrade plan on each node in the configured order: drain,
+apt-get update && full-upgrade on the host, the new Talos release installed
+into the Talos VM (with --talos-version), one reboot that boots both, restore,
+and a full-health wait before the next node.
+
+The Talos release is recorded with the progress, so a continuation upgrades the
+remaining nodes to the same one; passing a different --talos-version then is an
+error rather than a mixed cluster. Like rolling reboot, it stops at the node it
+is running on and prints the command to finish from a peer.
+
+Kubernetes itself (talosctl upgrade-k8s) is not part of this.`),
+		Args:              rollingArgs,
+		ValidArgsFunction: completeCluster,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			restart, err := cmd.Flags().GetBool("restart")
+			if err != nil {
+				return err
+			}
+			return runRolling(cmd.Context(), plan.CmdUpgrade, restart)
+		},
+	}
+	upgrade.Flags().Bool("restart", false, "discard recorded progress and start from the first node")
+	withTalosFlags(upgrade)
+
+	c.AddCommand(reboot, upgrade)
 	return c
 }
 
-func runRollingReboot(ctx context.Context, restart bool) error {
+func rollingArgs(cmd *cobra.Command, args []string) error {
+	if len(args) != 1 || args[0] != "cluster" {
+		return fmt.Errorf("expected `%s cluster`", cmd.CommandPath())
+	}
+	return nil
+}
+
+// runRolling applies a single-node command (reboot or upgrade) to every node in
+// turn. Each node gets the full plan, verify included, so the next node only
+// starts once the cluster is whole again.
+func runRolling(ctx context.Context, command string, restart bool) error {
 	cfg, lg, err := setup()
 	if err != nil {
 		return err
 	}
 	defer lg.Close()
 	self := plan.Hostname()
+	kind := rollingReboot
+	if command == plan.CmdUpgrade {
+		kind = rollingUpgrade
+	}
 
 	order := cfg.RollingOrder()
 	saveProgress := func(p *state.Rolling) {
@@ -73,29 +128,40 @@ func runRollingReboot(ctx context.Context, restart bool) error {
 		prog = nil
 	}
 	if restart && prog != nil {
-		lg.Plain("--restart: discarding recorded progress (%s)", strings.Join(prog.Done, ", "))
+		lg.Plain("--restart: discarding recorded progress of the %s (%s)", rollingWhat(prog.Command), strings.Join(prog.Done, ", "))
 		prog = nil
 	}
+	if prog != nil && prog.Command != kind {
+		return fmt.Errorf("an unfinished %s is recorded (done: %s); finish it with `pvectl %s`, or discard it with --restart",
+			rollingWhat(prog.Command), strings.Join(prog.Done, ", "), rollingWhat(prog.Command)+" cluster")
+	}
 	if prog == nil {
-		prog = &state.Rolling{Command: "rolling-reboot", Order: order, Holder: self, Started: time.Now()}
+		prog = &state.Rolling{Command: kind, Order: order, Holder: self, Started: time.Now(),
+			TalosVersion: g.opts.TalosVersion, TalosImage: g.opts.TalosImage}
 	} else {
-		lg.Plain("continuing an earlier rolling reboot started %s (done: %s)",
-			prog.Started.Format(time.RFC3339), strings.Join(prog.Done, ", "))
+		lg.Plain("continuing an earlier %s started %s (done: %s)",
+			rollingWhat(kind), prog.Started.Format(time.RFC3339), strings.Join(prog.Done, ", "))
+		if err := adoptRecordedTalosTarget(prog); err != nil {
+			return err
+		}
 	}
 
 	remaining := prog.Remaining()
-	lg.Plain("pvectl %s -- rolling reboot", version)
+	lg.Plain("pvectl %s -- %s", version, rollingWhat(kind))
 	lg.Plain("order: %s", strings.Join(order, " -> "))
 	lg.Plain("remaining: %s", strings.Join(remaining, ", "))
+	if command == plan.CmdUpgrade {
+		lg.Plain("talos: %s", talosTargetLabel())
+	}
 	lg.Plain("")
 
 	for _, node := range remaining {
 		if node == self {
 			lg.Plain("")
 			lg.Warnf("%s is the node running pvectl; stopping here.", node)
-			lg.Plain("Every other node has been rebooted. Finish from a peer:")
+			lg.Plain("Every other node is done. Finish from a peer:")
 			for _, other := range otherThan(order, node) {
-				lg.Plain("    ssh %s 'pvectl reboot node %s --yes'", cfg.Nodes[other].LANIP, node)
+				lg.Plain("    ssh %s 'pvectl %s node %s%s --yes'", cfg.Nodes[other].LANIP, command, node, talosFlagsFor(command))
 			}
 			lg.Plain("")
 			lg.Plain("(ssh by IP, not by hostname: the tailnet name is hijacked by Tailscale SSH)")
@@ -104,9 +170,9 @@ func runRollingReboot(ctx context.Context, restart bool) error {
 		}
 		lg.Plain("")
 		lg.Plain("================ %s ================", node)
-		if err := runNodeOp(ctx, node, plan.CmdReboot, true); err != nil {
+		if err := runNodeOp(ctx, node, command, true); err != nil {
 			saveProgress(prog)
-			return fmt.Errorf("rolling reboot stopped at %s: %w", node, err)
+			return fmt.Errorf("%s stopped at %s: %w", rollingWhat(kind), node, err)
 		}
 		prog.Done = append(prog.Done, node)
 		saveProgress(prog)
@@ -117,8 +183,56 @@ func runRollingReboot(ctx context.Context, restart bool) error {
 		}
 	}
 	lg.Plain("")
-	lg.Plain("Rolling reboot complete: %s", strings.Join(prog.Done, ", "))
+	lg.Plain("%s complete: %s", rollingWhat(kind), strings.Join(prog.Done, ", "))
 	return nil
+}
+
+// adoptRecordedTalosTarget makes a continued rolling upgrade use the release it
+// started with. Omitting the flag on the second invocation is the normal case
+// and inherits it; naming a different one is refused.
+func adoptRecordedTalosTarget(prog *state.Rolling) error {
+	if prog.Command != rollingUpgrade {
+		return nil
+	}
+	given := g.opts.TalosVersion != "" || g.opts.TalosImage != ""
+	if given && (g.opts.TalosVersion != prog.TalosVersion || g.opts.TalosImage != prog.TalosImage) {
+		return fmt.Errorf("this rolling upgrade was started with Talos %s; refusing to continue with %s (use --restart to start over)",
+			orNone(prog.TalosVersion+prog.TalosImage), g.opts.TalosVersion+g.opts.TalosImage)
+	}
+	g.opts.TalosVersion, g.opts.TalosImage = prog.TalosVersion, prog.TalosImage
+	return nil
+}
+
+func talosTargetLabel() string {
+	switch {
+	case g.opts.TalosVersion != "":
+		return g.opts.TalosVersion + " (image derived from each node's machine.install.image)"
+	case g.opts.TalosImage != "":
+		return g.opts.TalosImage
+	}
+	return "not upgraded (no --talos-version)"
+}
+
+// talosFlagsFor renders the Talos target for the hand-off command, so the last
+// node is upgraded to the same release as the others.
+func talosFlagsFor(command string) string {
+	if command != plan.CmdUpgrade {
+		return ""
+	}
+	switch {
+	case g.opts.TalosVersion != "":
+		return " --talos-version " + g.opts.TalosVersion
+	case g.opts.TalosImage != "":
+		return " --talos-image " + g.opts.TalosImage
+	}
+	return ""
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
 }
 
 func otherThan(list []string, v string) []string {

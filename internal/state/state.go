@@ -370,6 +370,10 @@ type Rolling struct {
 	Done    []string  `json:"done"`
 	Holder  string    `json:"holder"`
 	Started time.Time `json:"started"`
+	// TalosVersion / TalosImage pin a rolling upgrade to one release, so a
+	// continuation cannot quietly upgrade the remaining nodes to another.
+	TalosVersion string `json:"talos_version,omitempty"`
+	TalosImage   string `json:"talos_image,omitempty"`
 }
 
 const rollingName = "rolling.json"

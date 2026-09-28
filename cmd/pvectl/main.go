@@ -77,6 +77,7 @@ Every operation is the same list of steps executed by the same runner, so
 		newPlanCmd(),
 		newShutdownCmd(),
 		newRebootCmd(),
+		newUpgradeCmd(),
 		newStartCmd(),
 		newMaintCmd(),
 		newRollingCmd(),
@@ -86,6 +87,8 @@ Every operation is the same list of steps executed by the same runner, so
 		newDoctorCmd(),
 		newConfigCmd(),
 	)
+
+	installCompletions(root)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -104,6 +107,9 @@ func setup() (*config.Config, *plog.Logger, error) {
 		if !plan.ValidCheckName(s) {
 			return nil, nil, fmt.Errorf("unknown check %q; valid names: %s", s, strings.Join(plan.CheckNames, ", "))
 		}
+	}
+	if err := plan.ValidateUpgradeOptions(g.opts); err != nil {
+		return nil, nil, err
 	}
 	cfg, err := config.Load(g.configPath)
 	if err != nil {

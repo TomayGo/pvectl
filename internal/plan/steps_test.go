@@ -49,7 +49,7 @@ func TestCheckNamesAreUnique(t *testing.T) {
 // that leave the window open.
 func TestStepsForEveryCommand(t *testing.T) {
 	e := &Env{Cfg: minimalConfig()}
-	for _, c := range []string{CmdMaintEnter, CmdMaintExit, CmdShutdown, CmdReboot, CmdStart} {
+	for _, c := range []string{CmdMaintEnter, CmdMaintExit, CmdShutdown, CmdReboot, CmdUpgrade, CmdStart} {
 		steps, err := StepsFor(c, e)
 		if err != nil {
 			t.Fatalf("%s: %v", c, err)

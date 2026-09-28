@@ -7,13 +7,18 @@ package talos
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/cosi-project/runtime/pkg/safe"
+	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	talosclient "github.com/siderolabs/talos/pkg/machinery/client"
+	configres "github.com/siderolabs/talos/pkg/machinery/resources/config"
 
 	plog "github.com/tamago/pvectl/internal/log"
 )
@@ -218,4 +223,146 @@ func (c *Client) Etcd(ctx context.Context, ips []string) (*EtcdHealth, error) {
 	sort.Strings(h.Members)
 	sort.Strings(h.Responding)
 	return h, nil
+}
+
+// Version returns the Talos release tag the node is running, e.g. "v1.13.6".
+func (c *Client) Version(ctx context.Context, ip string) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cl, nctx, err := c.connect(cctx, ip)
+	if err != nil {
+		return "", err
+	}
+	defer cl.Close()
+	resp, err := cl.Version(nctx)
+	if err != nil {
+		return "", fmt.Errorf("talos version %s: %w", ip, err)
+	}
+	for _, m := range resp.GetMessages() {
+		if tag := m.GetVersion().GetTag(); tag != "" {
+			return tag, nil
+		}
+	}
+	return "", fmt.Errorf("talos %s reported no version", ip)
+}
+
+// InstallImage reads machine.install.image from the node's active config. It
+// carries the Image Factory schematic, so an upgrade built from it keeps the
+// node's system extensions (qemu-guest-agent here).
+func (c *Client) InstallImage(ctx context.Context, ip string) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cl, nctx, err := c.connect(cctx, ip)
+	if err != nil {
+		return "", err
+	}
+	defer cl.Close()
+	mc, err := safe.StateGetByID[*configres.MachineConfig](nctx, cl.COSI, configres.ActiveID)
+	if err != nil {
+		return "", fmt.Errorf("read machine config from %s: %w", ip, err)
+	}
+	cfg := mc.Config()
+	if cfg == nil || cfg.Machine() == nil || cfg.Machine().Install() == nil {
+		return "", fmt.Errorf("machine config on %s has no install section", ip)
+	}
+	img := cfg.Machine().Install().Image()
+	if img == "" {
+		return "", fmt.Errorf("machine config on %s has no install image", ip)
+	}
+	return img, nil
+}
+
+// Upgrade writes a new Talos release to the node's inactive boot slot and
+// makes it the default, without rebooting. That is what the LifecycleService
+// API (Talos >= 1.13) does, and it is the reason the upgrade folds into a host
+// reboot for free: the Talos VM's next boot -- whenever and however it happens
+// -- is the upgrade.
+//
+// The image is pulled first, as talosctl does, so a bad reference fails here
+// with a registry error instead of inside the installer.
+func (c *Client) Upgrade(ctx context.Context, ip, image string) error {
+	if c.dryRun {
+		c.log.Infof("(dry-run) would install %s on %s (no reboot)", image, ip)
+		return nil
+	}
+	cl, nctx, err := c.connect(ctx, ip)
+	if err != nil {
+		return err
+	}
+	defer cl.Close()
+	containerd := &common.ContainerdInstance{
+		Driver:    common.ContainerDriver_CRI,
+		Namespace: common.ContainerdNamespace_NS_SYSTEM,
+	}
+
+	c.log.Infof("pulling %s on %s", image, ip)
+	pull, err := cl.ImageClient.Pull(nctx, &machineapi.ImageServicePullRequest{Containerd: containerd, ImageRef: image})
+	if err != nil {
+		return fmt.Errorf("pull %s on %s: %w", image, ip, err)
+	}
+	for {
+		msg, err := pull.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("pull %s on %s: %w", image, ip, err)
+		}
+		if name := msg.GetName(); name != "" {
+			c.log.Debugf("pulled %s", name)
+		}
+	}
+
+	c.log.Infof("installing %s on %s", image, ip)
+	up, err := cl.LifecycleClient.Upgrade(nctx, &machineapi.LifecycleServiceUpgradeRequest{
+		Containerd: containerd,
+		Source:     &machineapi.InstallArtifactsSource{ImageName: image},
+	})
+	if err != nil {
+		return fmt.Errorf("upgrade %s: %w", ip, err)
+	}
+	exit := int32(-1)
+	for {
+		msg, err := up.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("upgrade %s: %w", ip, err)
+		}
+		switch r := msg.GetProgress().GetResponse().(type) {
+		case *machineapi.LifecycleServiceInstallProgress_Message:
+			c.log.Debugf("installer: %s", strings.TrimSpace(r.Message))
+		case *machineapi.LifecycleServiceInstallProgress_ExitCode:
+			exit = r.ExitCode
+		}
+	}
+	switch exit {
+	case 0:
+		return nil
+	case -1:
+		return fmt.Errorf("upgrade %s: the installer stream ended without an exit code", ip)
+	default:
+		return fmt.Errorf("upgrade %s: installer exited with code %d (see the transcript for its output)", ip, exit)
+	}
+}
+
+// Rollback points the boot loader back at the previous release and reboots the
+// node into it.
+func (c *Client) Rollback(ctx context.Context, ip string) error {
+	if c.dryRun {
+		c.log.Infof("(dry-run) would roll %s back to its previous release", ip)
+		return nil
+	}
+	cl, nctx, err := c.connect(ctx, ip)
+	if err != nil {
+		return err
+	}
+	defer cl.Close()
+	rctx, cancel := context.WithTimeout(nctx, 30*time.Second)
+	defer cancel()
+	if err := cl.Rollback(rctx); err != nil && !isDisconnect(err) {
+		return fmt.Errorf("talos rollback %s: %w", ip, err)
+	}
+	return nil
 }

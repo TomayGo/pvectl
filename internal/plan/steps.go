@@ -38,6 +38,9 @@ func stepPreflight(forShutdown bool) Step {
 		Desc: "read-only safety checks",
 		Do: func(ctx context.Context, e *Env) error {
 			r := Preflight(ctx, e, forShutdown)
+			if e.State != nil && e.State.Command == CmdUpgrade {
+				upgradeChecks(ctx, e, r)
+			}
 			r.Print(e)
 			if r.Failed() {
 				return fmt.Errorf("preflight failed: %s (override individually with --skip-check)",
@@ -800,5 +803,12 @@ func (e *Env) impactSummary() string {
 	}
 	parts = append(parts, "ceph goes degraded (size=3/min_size=2, IO continues)")
 	parts = append(parts, fmt.Sprintf("kubernetes loses %s", e.Node.Talos.Name))
+	if e.State != nil && e.State.Command == CmdUpgrade {
+		what := "host packages upgraded"
+		if v := dataString(e, "talos-upgrade", "requested_version") + dataString(e, "talos-upgrade", "requested_image"); v != "" {
+			what += ", Talos -> " + v
+		}
+		parts = append(parts, what)
+	}
 	return strings.Join(parts, "; ")
 }

@@ -77,6 +77,9 @@ var CheckNames = []string{
 	"tasks",
 	"guests",
 	"ssh-path",
+	// upgrade only
+	"apt-plan",
+	"talos-target",
 }
 
 func ValidCheckName(n string) bool {
