@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/tamago/pvectl/internal/apt"
@@ -31,8 +30,9 @@ func ValidateUpgradeOptions(o Options) error {
 	if o.TalosVersion != "" && o.TalosImage != "" {
 		return fmt.Errorf("--talos-version and --talos-image are mutually exclusive")
 	}
-	if o.TalosVersion != "" && !talosVersionRE.MatchString(o.TalosVersion) {
-		return fmt.Errorf("--talos-version %q is not a release tag like v1.13.7", o.TalosVersion)
+	if o.TalosVersion != "" && !talosVersionRE.MatchString(o.TalosVersion) && !talos.IsAlias(o.TalosVersion) {
+		return fmt.Errorf("--talos-version %q is not a release tag like v1.13.7, %q or %q",
+			o.TalosVersion, talos.AliasLatest, talos.AliasLatestPatch)
 	}
 	return nil
 }
@@ -115,36 +115,23 @@ func imageTag(image string) string {
 // olderThan compares two release tags numerically, ignoring pre-release
 // suffixes. Unparseable input compares as not older.
 func olderThan(a, b string) bool {
-	pa, pb := versionParts(a), versionParts(b)
+	pa, pb := talos.ParseVersion(a), talos.ParseVersion(b)
 	if pa == nil || pb == nil {
 		return false
 	}
-	for i := range 3 {
-		if pa[i] != pb[i] {
-			return pa[i] < pb[i]
-		}
-	}
-	return false
+	return talos.CompareVersions(pa, pb) < 0
 }
 
-func versionParts(v string) []int {
-	v = strings.TrimPrefix(v, "v")
-	if i := strings.IndexByte(v, '-'); i >= 0 {
-		v = v[:i]
+// skipsMinor reports an upgrade that crosses more than one minor release (or a
+// major). Talos supports upgrading one minor at a time; jumping further is
+// untested upstream and can skip a config or etcd migration that the
+// intermediate release performs.
+func skipsMinor(from, to string) bool {
+	f, t := talos.ParseVersion(from), talos.ParseVersion(to)
+	if f == nil || t == nil {
+		return false
 	}
-	f := strings.Split(v, ".")
-	if len(f) != 3 {
-		return nil
-	}
-	out := make([]int, 3)
-	for i, s := range f {
-		n, err := strconv.Atoi(s)
-		if err != nil {
-			return nil
-		}
-		out[i] = n
-	}
-	return out
+	return t[0] != f[0] || t[1]-f[1] > 1
 }
 
 // ---------- preflight additions ----------
@@ -201,6 +188,10 @@ func checkTalosTarget(ctx context.Context, e *Env, r *Report) {
 		return
 	case version == cur:
 		r.add("talos-target", Pass, "%s already runs %s; nothing to install", e.Node.Talos.Name, cur)
+		return
+	case version != "" && skipsMinor(cur, version):
+		r.add("talos-target", Fail, "%s runs %s; %s skips a minor release -- Talos upgrades one minor at a time, "+
+			"go through the intermediate release first", e.Node.Talos.Name, cur, version)
 		return
 	}
 	exists, known, err := talos.ImageExists(ctx, image)

@@ -47,7 +47,21 @@ func TestValidateUpgradeOptions(t *testing.T) {
 	if err := ValidateUpgradeOptions(Options{TalosVersion: "v1.13.7", TalosImage: "x"}); err == nil {
 		t.Fatal("both flags at once must be rejected")
 	}
-	if err := ValidateUpgradeOptions(Options{TalosVersion: "v1.14.0-beta.1"}); err != nil {
-		t.Fatal(err)
+	for _, v := range []string{"v1.14.0-beta.1", "latest", "latest-patch"} {
+		if err := ValidateUpgradeOptions(Options{TalosVersion: v}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ValidateUpgradeOptions(Options{TalosVersion: "newest"}); err == nil {
+		t.Fatal("unknown alias must be rejected")
+	}
+}
+
+func TestSkipsMinor(t *testing.T) {
+	if skipsMinor("v1.13.6", "v1.14.1") || skipsMinor("v1.13.6", "v1.13.10") {
+		t.Fatal("one minor (or a patch) is a supported step")
+	}
+	if !skipsMinor("v1.13.6", "v1.15.0") || !skipsMinor("v1.13.6", "v2.0.0") {
+		t.Fatal("two minors or a major must be flagged")
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/tamago/pvectl/internal/alert"
 	"github.com/tamago/pvectl/internal/plan"
 	"github.com/tamago/pvectl/internal/state"
+	"github.com/tamago/pvectl/internal/talos"
 	"github.com/tamago/pvectl/internal/wol"
 )
 
@@ -68,9 +70,11 @@ apt-get update && full-upgrade on the host, the new Talos release installed
 into the Talos VM (with --talos-version), one reboot that boots both, restore,
 and a full-health wait before the next node.
 
-The Talos release is recorded with the progress, so a continuation upgrades the
-remaining nodes to the same one; passing a different --talos-version then is an
-error rather than a mixed cluster. Like rolling reboot, it stops at the node it
+--talos-version takes a tag, "latest" (newest stable release) or
+"latest-patch" (newest patch of the minor the cluster runs). An alias is
+resolved to a tag once, at the start, and the tag is recorded with the
+progress, so a continuation upgrades the remaining nodes to the same release;
+passing a different tag then is an error rather than a mixed cluster. Like rolling reboot, it stops at the node it
 is running on and prints the command to finish from a peer.
 
 Kubernetes itself (talosctl upgrade-k8s) is not part of this.`),
@@ -135,6 +139,12 @@ func runRolling(ctx context.Context, command string, restart bool) error {
 		return fmt.Errorf("an unfinished %s is recorded (done: %s); finish it with `pvectl %s`, or discard it with --restart",
 			rollingWhat(prog.Command), strings.Join(prog.Done, ", "), rollingWhat(prog.Command)+" cluster")
 	}
+	fresh := prog == nil
+	if prog == nil && command == plan.CmdUpgrade {
+		if err := resolveTalosAlias(ctx, cfg, lg); err != nil {
+			return err
+		}
+	}
 	if prog == nil {
 		prog = &state.Rolling{Command: kind, Order: order, Holder: self, Started: time.Now(),
 			TalosVersion: g.opts.TalosVersion, TalosImage: g.opts.TalosImage}
@@ -171,6 +181,13 @@ func runRolling(ctx context.Context, command string, restart bool) error {
 		lg.Plain("")
 		lg.Plain("================ %s ================", node)
 		if err := runNodeOp(ctx, node, command, true); err != nil {
+			// Declining the first node's confirmation means this rolling run
+			// never began. Recording it would make the next invocation
+			// "continue" it -- with whatever Talos target this one had --
+			// instead of starting the run the operator actually asks for.
+			if fresh && len(prog.Done) == 0 && errors.Is(err, errNotStarted) {
+				return err
+			}
 			saveProgress(prog)
 			return fmt.Errorf("%s stopped at %s: %w", rollingWhat(kind), node, err)
 		}
@@ -193,6 +210,18 @@ func runRolling(ctx context.Context, command string, restart bool) error {
 func adoptRecordedTalosTarget(prog *state.Rolling) error {
 	if prog.Command != rollingUpgrade {
 		return nil
+	}
+	// An alias on the continuation means "whatever this run is upgrading to";
+	// re-resolving it could name a release published since, and refusing it
+	// would make the obvious re-run of the same command line fail. But a run
+	// that was recorded without any Talos target cannot satisfy it: silently
+	// continuing host-only is exactly what the operator did not ask for.
+	if talos.IsAlias(g.opts.TalosVersion) {
+		if prog.TalosVersion == "" && prog.TalosImage == "" {
+			return fmt.Errorf("this rolling upgrade was started without a Talos target; --talos-version %s "+
+				"cannot join it (finish it host-only, or use --restart)", g.opts.TalosVersion)
+		}
+		g.opts.TalosVersion = ""
 	}
 	given := g.opts.TalosVersion != "" || g.opts.TalosImage != ""
 	if given && (g.opts.TalosVersion != prog.TalosVersion || g.opts.TalosImage != prog.TalosImage) {

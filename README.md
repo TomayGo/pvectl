@@ -57,7 +57,11 @@ pvectl rolling upgrade cluster --talos-version v1.13.7   # every node, one at a 
 Per node: drain -> Talos release written to the VM's inactive boot slot ->
 `apt-get update && full-upgrade` on the host -> one reboot that boots both ->
 restore -> verify -> `upgrade-check` (did Talos actually boot the new release).
-Without `--talos-version` only the host is upgraded. `--talos-image` names the
+Without `--talos-version` only the host is upgraded. It takes a tag, `latest`
+(newest stable release) or `latest-patch` (newest patch of the minor the
+cluster runs); an alias is resolved to a tag once at the start and only the tag
+is recorded, so a resume or a continued rolling upgrade installs the same
+release. A target more than one minor ahead is refused. `--talos-image` names the
 installer exactly; otherwise it is the node's `machine.install.image` with the
 tag replaced, which keeps the Image Factory schematic (qemu-guest-agent).
 Kubernetes itself (`talosctl upgrade-k8s`) is not part of it.

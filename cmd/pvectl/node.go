@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -109,7 +110,7 @@ version of Ceph or pve-manager: those need a human and their own procedure.`),
 // options, which is where plan.NewRunner reads them from.
 func withTalosFlags(c *cobra.Command) *cobra.Command {
 	c.Flags().StringVar(&g.opts.TalosVersion, "talos-version", "",
-		"also upgrade Talos to this release (e.g. v1.13.7), keeping the node's Image Factory schematic")
+		"also upgrade Talos to this release (v1.13.7, latest, or latest-patch), keeping the node's Image Factory schematic")
 	c.Flags().StringVar(&g.opts.TalosImage, "talos-image", "",
 		"also upgrade Talos using exactly this installer image (instead of --talos-version)")
 	return c
@@ -174,6 +175,13 @@ func runNodeOp(ctx context.Context, target, command string, fromRolling bool) er
 		return err
 	}
 	defer lg.Close()
+	if command == plan.CmdUpgrade {
+		// A no-op inside a rolling upgrade, which resolved it already.
+		if err := resolveTalosAlias(ctx, e.Cfg, lg); err != nil {
+			return err
+		}
+		e.Opts.TalosVersion = g.opts.TalosVersion
+	}
 	banner(e, command)
 
 	if err := acquireLock(e, command); err != nil {
@@ -196,7 +204,7 @@ func runNodeOp(ctx context.Context, target, command string, fromRolling bool) er
 	}
 	if err := e.Confirm(ctx, confirmPrompt(e, command)); err != nil {
 		abandonRun(e, !r.Continued)
-		return err
+		return fmt.Errorf("%w: %v", errNotStarted, err)
 	}
 	start := time.Now()
 	if err := r.Run(ctx); err != nil {
@@ -371,6 +379,10 @@ func impactLines(e *plan.Env, command string) string {
 	}
 	return b.String()
 }
+
+// errNotStarted marks a node operation that was declined before its first
+// step: nothing on the cluster changed, so there is nothing to continue.
+var errNotStarted = errors.New("not started")
 
 func confirmPrompt(e *plan.Env, command string) string {
 	return fmt.Sprintf("About to %s %s.", command, e.Target)

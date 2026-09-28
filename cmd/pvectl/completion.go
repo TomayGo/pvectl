@@ -7,6 +7,7 @@ import (
 
 	"github.com/tamago/pvectl/internal/config"
 	"github.com/tamago/pvectl/internal/plan"
+	"github.com/tamago/pvectl/internal/talos"
 )
 
 // Completion reads node names from the live config rather than a baked-in
@@ -88,7 +89,8 @@ func installCompletions(root *cobra.Command) {
 			c.ValidArgsFunction = noCompletion
 		}
 		if c.Flags().Lookup("talos-version") != nil {
-			_ = c.RegisterFlagCompletionFunc("talos-version", noCompletion)
+			_ = c.RegisterFlagCompletionFunc("talos-version", cobra.FixedCompletions(
+				[]string{talos.AliasLatest, talos.AliasLatestPatch}, cobra.ShellCompDirectiveNoFileComp))
 			_ = c.RegisterFlagCompletionFunc("talos-image", noCompletion)
 		}
 		for _, sub := range c.Commands() {

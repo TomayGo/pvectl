@@ -148,6 +148,16 @@ func TestAdoptRecordedTalosTarget(t *testing.T) {
 	if err := adoptRecordedTalosTarget(prog); err == nil {
 		t.Fatal("a different release must be refused")
 	}
+	g.opts.TalosVersion = "latest"
+	if err := adoptRecordedTalosTarget(prog); err != nil || g.opts.TalosVersion != "v1.13.7" {
+		t.Fatalf("an alias should join the recorded release: %v %q", err, g.opts.TalosVersion)
+	}
+	// The case that happened: a host-only run was recorded, then `latest` given.
+	hostOnly := &state.Rolling{Command: rollingUpgrade}
+	g.opts.TalosVersion = "latest"
+	if err := adoptRecordedTalosTarget(hostOnly); err == nil {
+		t.Fatal("an alias must not silently continue a run recorded without a Talos target")
+	}
 }
 
 func TestCloseRollingEntryIgnoresShutdown(t *testing.T) {
