@@ -8,6 +8,10 @@
 //
 // Hosts are always addressed by LAN IP: the hostname resolves to the tailnet,
 // where Tailscale SSH intercepts the connection and waits for a browser login.
+// The host key is checked the way PVE itself checks it (PVE >= 8.2): against
+// the node's own /etc/pve/nodes/<node>/ssh_known_hosts, under its node name.
+// Nothing else is reliable -- root's ~/.ssh/known_hosts exists on whichever
+// nodes someone happened to ssh from by hand, and on the others it does not.
 package apt
 
 import (
@@ -49,16 +53,34 @@ const (
 
 const dpkgOpts = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
-// run executes a shell snippet on ip as root. Every output line goes to the
-// transcript at debug level; stderr is also kept for the error message.
-func (c *Client) run(ctx context.Context, ip, script string) (stdout string, err error) {
-	c.log.Debugf("ssh root@%s: %s", ip, script)
-	cmd := exec.CommandContext(ctx, "ssh",
+// Host is a PVE node: its name selects the host key, its IP is where to connect.
+type Host struct {
+	Name string
+	IP   string
+}
+
+// sshArgs pins the host key to the one pmxcfs holds for that node, and
+// ignores every other known_hosts file so a stale personal entry can neither
+// satisfy nor break the check.
+func sshArgs(h Host) []string {
+	return []string{
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=4",
-		"root@"+ip, script)
+		"-o", "HostKeyAlias=" + h.Name,
+		"-o", "UserKnownHostsFile=/etc/pve/nodes/" + h.Name + "/ssh_known_hosts",
+		"-o", "GlobalKnownHostsFile=none",
+		"root@" + h.IP,
+	}
+}
+
+// run executes a shell snippet on the host as root. Every output line goes to
+// the transcript at debug level; stderr is also kept for the error message.
+func (c *Client) run(ctx context.Context, h Host, script string) (stdout string, err error) {
+	ip := h.IP
+	c.log.Debugf("ssh root@%s (%s): %s", ip, h.Name, script)
+	cmd := exec.CommandContext(ctx, "ssh", append(sshArgs(h), script)...)
 	outPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err
@@ -98,21 +120,21 @@ func (c *Client) run(ctx context.Context, ip, script string) (stdout string, err
 // Update refreshes the package index. --error-on=any makes a repository that
 // failed to fetch an error rather than a warning; upgrading from a half-stale
 // index is how a node ends up with a different package set from its peers.
-func (c *Client) Update(ctx context.Context, ip string) error {
+func (c *Client) Update(ctx context.Context, h Host) error {
 	if c.dryRun {
-		c.log.Infof("(dry-run) would run apt-get update on %s", ip)
+		c.log.Infof("(dry-run) would run apt-get update on %s", h.IP)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, updateTimeout)
 	defer cancel()
-	_, err := c.run(ctx, ip, noninteractive+"apt-get -q --error-on=any update")
+	_, err := c.run(ctx, h, noninteractive+"apt-get -q --error-on=any update")
 	return err
 }
 
 // Simulate reports what a full-upgrade would do, from the current index. It
 // changes nothing, so it runs in --dry-run as well.
-func (c *Client) Simulate(ctx context.Context, ip string) (*Plan, error) {
-	out, err := c.run(ctx, ip, noninteractive+"apt-get -s -q full-upgrade")
+func (c *Client) Simulate(ctx context.Context, h Host) (*Plan, error) {
+	out, err := c.run(ctx, h, noninteractive+"apt-get -s -q full-upgrade")
 	if err != nil {
 		return nil, err
 	}
@@ -127,9 +149,9 @@ func (c *Client) Simulate(ctx context.Context, ip string) (*Plan, error) {
 // dpkg --configure -a first finishes whatever an interrupted earlier attempt
 // left half-configured; apt refuses to run at all until that is done, and it is
 // a no-op otherwise.
-func (c *Client) FullUpgrade(ctx context.Context, ip string) error {
+func (c *Client) FullUpgrade(ctx context.Context, h Host) error {
 	if c.dryRun {
-		c.log.Infof("(dry-run) would run apt-get full-upgrade on %s", ip)
+		c.log.Infof("(dry-run) would run apt-get full-upgrade on %s", h.IP)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, upgradeTimeout)
@@ -137,13 +159,13 @@ func (c *Client) FullUpgrade(ctx context.Context, ip string) error {
 	script := noninteractive +
 		"dpkg --force-confdef --force-confold --configure -a && " +
 		"apt-get -y -q " + dpkgOpts + " full-upgrade"
-	_, err := c.run(ctx, ip, script)
+	_, err := c.run(ctx, h, script)
 	return err
 }
 
 // Kernel returns the host's running kernel release.
-func (c *Client) Kernel(ctx context.Context, ip string) (string, error) {
-	out, err := c.run(ctx, ip, "uname -r")
+func (c *Client) Kernel(ctx context.Context, h Host) (string, error) {
+	out, err := c.run(ctx, h, "uname -r")
 	return strings.TrimSpace(out), err
 }
 

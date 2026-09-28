@@ -155,7 +155,7 @@ func upgradeChecks(ctx context.Context, e *Env, r *Report) {
 // Preflight is read-only, so it does not refresh the index; host-upgrade
 // simulates again after `apt-get update` and applies the same rules.
 func checkAptPlan(ctx context.Context, e *Env, r *Report) {
-	p, err := e.Apt.Simulate(ctx, e.Node.LANIP)
+	p, err := e.Apt.Simulate(ctx, e.aptHost())
 	if err != nil {
 		r.add("apt-plan", Fail, "cannot simulate the upgrade on %s: %v", e.Target, err)
 		return
@@ -301,7 +301,7 @@ func stepHostUpgrade() Step {
 		// host-reboot still leaves it working -- just with new packages on disk.
 		Irreversible: true,
 		Do: func(ctx context.Context, e *Env) error {
-			ip := e.Node.LANIP
+			ip := e.aptHost()
 			if err := e.Apt.Update(ctx, ip); err != nil {
 				return fmt.Errorf("apt-get update on %s: %w", e.Target, err)
 			}
@@ -339,6 +339,8 @@ func stepHostUpgrade() Step {
 	}
 }
 
+func (e *Env) aptHost() apt.Host { return apt.Host{Name: e.Target, IP: e.Node.LANIP} }
+
 // notablePackages are the ones worth a line of their own in the transcript.
 var notablePackages = []string{"pve-manager", "proxmox-ve", "qemu-server", "pve-qemu-kvm", "ceph-osd", "corosync"}
 
@@ -364,7 +366,7 @@ func stepUpgradeCheck() Step {
 				e.Log.Infof("(dry-run) would compare running versions with what was installed")
 				return nil
 			}
-			if k, err := e.Apt.Kernel(ctx, e.Node.LANIP); err != nil {
+			if k, err := e.Apt.Kernel(ctx, e.aptHost()); err != nil {
 				e.Log.Warnf("cannot read %s's running kernel: %v", e.Target, err)
 			} else {
 				e.Log.Infof("%s runs kernel %s", e.Target, k)
