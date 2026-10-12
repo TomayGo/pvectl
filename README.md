@@ -35,6 +35,11 @@ Secrets are node-local on purpose: `/etc/pve` is `root:www-data 0640` and
 pveproxy (port 8006) runs as `www-data`, so anything placed there is readable by
 the web UI's process.
 
+No address is built into the binary or the repository. Node IPs, WoL MACs, the
+Talos VMs and the k8s endpoints all live in `config.yaml`, which
+`pvectl config discover` generates from the running cluster; it stays in
+`/etc/pve` and is never committed.
+
 ## Everyday use
 
 ```bash
@@ -143,3 +148,7 @@ Covers the parts that cannot be exercised safely against the live cluster: the
 lock's exclusion and adoption, state round-trips through JSON, WoL packet
 construction, silence-matcher regex escaping, the shape of each plan, apt
 simulation parsing and its refusal rules, and installer-image tag handling.
+
+Test fixtures use documentation addresses only: IPv4 from RFC 5737
+(`192.0.2.0/24`, `198.51.100.0/24`), locally administered MACs
+(`02:00:00:...`) and `.example` hostnames.
