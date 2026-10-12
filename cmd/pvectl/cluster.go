@@ -47,19 +47,19 @@ plan for each and waiting for Ceph HEALTH_OK with every PG active+clean,
 corosync quorum and all kubernetes nodes Ready before starting the next.
 
 It cannot reboot the node it is running on -- the process would die before the
-restore steps -- so it stops there and prints the command to run from a peer.
-Progress is recorded, so re-running it continues where it left off.`),
+restore steps -- so when it gets there it hands the run over to a peer: the
+same command, started on the peer under systemd-run, continuing from the
+recorded progress. This terminal follows the peer's output until this node
+goes down. --no-handoff stops there instead and prints the command to finish
+with. Progress is recorded, so re-running it continues where it left off.`),
 		Args:              rollingArgs,
 		ValidArgsFunction: completeCluster,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			restart, err := cmd.Flags().GetBool("restart")
-			if err != nil {
-				return err
-			}
-			return runRolling(cmd.Context(), plan.CmdReboot, restart)
+			return runRolling(cmd, plan.CmdReboot)
 		},
 	}
 	reboot.Flags().Bool("restart", false, "discard recorded progress and start from the first node")
+	addHandoffFlags(reboot)
 
 	upgrade := &cobra.Command{
 		Use:   "upgrade cluster",
@@ -74,21 +74,19 @@ and a full-health wait before the next node.
 "latest-patch" (newest patch of the minor the cluster runs). An alias is
 resolved to a tag once, at the start, and the tag is recorded with the
 progress, so a continuation upgrades the remaining nodes to the same release;
-passing a different tag then is an error rather than a mixed cluster. Like rolling reboot, it stops at the node it
-is running on and prints the command to finish from a peer.
+passing a different tag then is an error rather than a mixed cluster. Like
+rolling reboot, it hands the run over to a peer when it reaches the node it is
+running on (--no-handoff: stop there instead).
 
 Kubernetes itself (talosctl upgrade-k8s) is not part of this.`),
 		Args:              rollingArgs,
 		ValidArgsFunction: completeCluster,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			restart, err := cmd.Flags().GetBool("restart")
-			if err != nil {
-				return err
-			}
-			return runRolling(cmd.Context(), plan.CmdUpgrade, restart)
+			return runRolling(cmd, plan.CmdUpgrade)
 		},
 	}
 	upgrade.Flags().Bool("restart", false, "discard recorded progress and start from the first node")
+	addHandoffFlags(upgrade)
 	withTalosFlags(upgrade)
 
 	c.AddCommand(reboot, upgrade)
@@ -105,7 +103,20 @@ func rollingArgs(cmd *cobra.Command, args []string) error {
 // runRolling applies a single-node command (reboot or upgrade) to every node in
 // turn. Each node gets the full plan, verify included, so the next node only
 // starts once the cluster is whole again.
-func runRolling(ctx context.Context, command string, restart bool) error {
+func runRolling(cmd *cobra.Command, command string) error {
+	ctx := cmd.Context()
+	restart, err := cmd.Flags().GetBool("restart")
+	if err != nil {
+		return err
+	}
+	noHandoff, err := cmd.Flags().GetBool("no-handoff")
+	if err != nil {
+		return err
+	}
+	handoffFrom, err := cmd.Flags().GetString("handoff-from")
+	if err != nil {
+		return err
+	}
 	cfg, lg, err := setup()
 	if err != nil {
 		return err
@@ -140,6 +151,12 @@ func runRolling(ctx context.Context, command string, restart bool) error {
 		return fmt.Errorf("an unfinished %s is recorded (done: %s); finish it with `pvectl %s`, or discard it with --restart",
 			rollingWhat(prog.Command), strings.Join(prog.Done, ", "), rollingWhat(prog.Command)+" cluster")
 	}
+	if prog == nil && handoffFrom != "" {
+		// The run was handed over precisely because it had progress; without
+		// it this would start over from the first node.
+		return fmt.Errorf("handed off from %s, but no rolling progress is recorded in %s; refusing to start over",
+			handoffFrom, state.Dir)
+	}
 	fresh := prog == nil
 	if prog == nil && command == plan.CmdUpgrade {
 		if err := resolveTalosAlias(ctx, cfg, lg); err != nil {
@@ -152,6 +169,9 @@ func runRolling(ctx context.Context, command string, restart bool) error {
 	} else {
 		lg.Plain("continuing an earlier %s started %s (done: %s)",
 			rollingWhat(kind), prog.Started.Format(time.RFC3339), strings.Join(prog.Done, ", "))
+		if handoffFrom != "" {
+			lg.Plain("handed off from %s", handoffFrom)
+		}
 		if err := adoptRecordedTalosTarget(prog); err != nil {
 			return err
 		}
@@ -168,16 +188,15 @@ func runRolling(ctx context.Context, command string, restart bool) error {
 
 	for _, node := range remaining {
 		if node == self {
-			lg.Plain("")
-			lg.Warnf("%s is the node running pvectl; stopping here.", node)
-			lg.Plain("Every other node is done. Finish from a peer:")
-			for _, other := range otherThan(order, node) {
-				lg.Plain("    ssh %s 'pvectl %s node %s%s --yes'", cfg.Nodes[other].LANIP, command, node, talosFlagsFor(command))
+			h := &handoffCtx{cfg: cfg, lg: lg, fs: cmd.Flags(), command: command, prog: prog, self: self}
+			if noHandoff {
+				saveProgress(prog)
+				lg.Plain("")
+				lg.Warnf("%s is the node running pvectl; stopping here (--no-handoff).", node)
+				h.printManual()
+				return nil
 			}
-			lg.Plain("")
-			lg.Plain("(ssh by IP, not by hostname: the tailnet name is hijacked by Tailscale SSH)")
-			saveProgress(prog)
-			return nil
+			return h.handOff(ctx)
 		}
 		lg.Plain("")
 		lg.Plain("================ %s ================", node)
@@ -241,21 +260,6 @@ func talosTargetLabel() string {
 		return g.opts.TalosImage
 	}
 	return "not upgraded (no --talos-version)"
-}
-
-// talosFlagsFor renders the Talos target for the hand-off command, so the last
-// node is upgraded to the same release as the others.
-func talosFlagsFor(command string) string {
-	if command != plan.CmdUpgrade {
-		return ""
-	}
-	switch {
-	case g.opts.TalosVersion != "":
-		return " --talos-version " + g.opts.TalosVersion
-	case g.opts.TalosImage != "":
-		return " --talos-image " + g.opts.TalosImage
-	}
-	return ""
 }
 
 func orNone(s string) string {

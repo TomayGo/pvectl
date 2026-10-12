@@ -1,17 +1,9 @@
 // Package apt upgrades a PVE host's packages over ssh.
 //
-// This is the one place pvectl leaves the PVE API: the API can refresh the
-// package index and list what is upgradable, but the only way it offers to
-// install anything is the web UI's interactive "Upgrade" terminal. ssh between
-// cluster nodes is set up by PVE itself (it is what migration uses), so this
-// adds no new trust -- only a new transport.
-//
-// Hosts are always addressed by LAN IP: the hostname resolves to the tailnet,
-// where Tailscale SSH intercepts the connection and waits for a browser login.
-// The host key is checked the way PVE itself checks it (PVE >= 8.2): against
-// the node's own /etc/pve/nodes/<node>/ssh_known_hosts, under its node name.
-// Nothing else is reliable -- root's ~/.ssh/known_hosts exists on whichever
-// nodes someone happened to ssh from by hand, and on the others it does not.
+// The PVE API can refresh the package index and list what is upgradable, but
+// the only way it offers to install anything is the web UI's interactive
+// "Upgrade" terminal, so this goes over ssh (see package remote for how hosts
+// are addressed and their keys checked).
 package apt
 
 import (
@@ -26,6 +18,7 @@ import (
 	"time"
 
 	plog "github.com/tamago/pvectl/internal/log"
+	"github.com/tamago/pvectl/internal/remote"
 )
 
 type Client struct {
@@ -54,33 +47,14 @@ const (
 const dpkgOpts = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
 // Host is a PVE node: its name selects the host key, its IP is where to connect.
-type Host struct {
-	Name string
-	IP   string
-}
-
-// sshArgs pins the host key to the one pmxcfs holds for that node, and
-// ignores every other known_hosts file so a stale personal entry can neither
-// satisfy nor break the check.
-func sshArgs(h Host) []string {
-	return []string{
-		"-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=10",
-		"-o", "ServerAliveInterval=15",
-		"-o", "ServerAliveCountMax=4",
-		"-o", "HostKeyAlias=" + h.Name,
-		"-o", "UserKnownHostsFile=/etc/pve/nodes/" + h.Name + "/ssh_known_hosts",
-		"-o", "GlobalKnownHostsFile=none",
-		"root@" + h.IP,
-	}
-}
+type Host = remote.Host
 
 // run executes a shell snippet on the host as root. Every output line goes to
 // the transcript at debug level; stderr is also kept for the error message.
 func (c *Client) run(ctx context.Context, h Host, script string) (stdout string, err error) {
 	ip := h.IP
 	c.log.Debugf("ssh root@%s (%s): %s", ip, h.Name, script)
-	cmd := exec.CommandContext(ctx, "ssh", append(sshArgs(h), script)...)
+	cmd := exec.CommandContext(ctx, "ssh", append(remote.Args(h), script)...)
 	outPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err

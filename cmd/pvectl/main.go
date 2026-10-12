@@ -36,6 +36,18 @@ type globals struct {
 var g = globals{opts: plan.DefaultOptions()}
 
 func main() {
+	root := newRoot()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := root.ExecuteContext(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "\npvectl: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func newRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "pvectl",
 		Short: "Graceful shutdown, reboot and recovery for the pve/ceph/talos cluster",
@@ -89,14 +101,7 @@ Every operation is the same list of steps executed by the same runner, so
 	)
 
 	installCompletions(root)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	if err := root.ExecuteContext(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "\npvectl: %v\n", err)
-		os.Exit(1)
-	}
+	return root
 }
 
 // setup loads the config, opens the transcript and validates the skip list.

@@ -42,7 +42,8 @@ pvectl status                       # maintenance state, leftover flags, cordons
 pvectl preflight pve-3              # safety checks only, changes nothing
 pvectl plan reboot node pve-3       # the plan and its blast radius
 pvectl reboot node pve-3            # the real thing, end to end
-pvectl rolling reboot cluster       # one node at a time, for kernel updates
+pvectl rolling reboot cluster       # one node at a time, for kernel updates;
+                                    # the node running it is handed over to a peer
 pvectl doctor --fix                 # clear leftovers from an interrupted run
 ```
 

@@ -47,27 +47,3 @@ func TestMajorIgnoresEpoch(t *testing.T) {
 		t.Fatal("epoch not stripped")
 	}
 }
-
-// The host key must come from pmxcfs under the node's name, never from a
-// personal known_hosts: that file exists only where someone ssh'd by hand.
-func TestSSHArgsPinPVEHostKey(t *testing.T) {
-	args := sshArgs(Host{Name: "pve-1", IP: "192.0.2.79"})
-	want := map[string]bool{
-		"HostKeyAlias=pve-1": false,
-		"UserKnownHostsFile=/etc/pve/nodes/pve-1/ssh_known_hosts": false,
-		"GlobalKnownHostsFile=none":                               false,
-	}
-	for _, a := range args {
-		if _, ok := want[a]; ok {
-			want[a] = true
-		}
-	}
-	for k, seen := range want {
-		if !seen {
-			t.Errorf("missing -o %s", k)
-		}
-	}
-	if args[len(args)-1] != "root@192.0.2.79" {
-		t.Errorf("must connect by LAN IP, got %s", args[len(args)-1])
-	}
-}
