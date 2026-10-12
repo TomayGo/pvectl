@@ -11,10 +11,21 @@ Design notes: [`/root/pvectl-design.md`](../pvectl-design.md).
 
 ## Install
 
-Built on pve-1 and copied to each node:
+GitHub Actions (`.github/workflows/build.yml`) runs gofmt, vet and the tests on
+every push and pull request and builds the static binary as a workflow
+artifact. Pushing a `v*` tag also publishes a release with `pvectl` and
+`SHA256SUMS`:
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=$(git describe --tags --always)" -o pvectl ./cmd/pvectl
+git tag v0.2.6 && git push origin v0.2.6
+```
+
+Copy the same binary to all three nodes: a rolling handoff refuses a peer whose
+`pvectl --version` differs. To build by hand instead:
+
+```bash
+v=$(git describe --tags --always)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.version=${v#v}" -o pvectl ./cmd/pvectl
 ```
 
 | path | what | permissions |

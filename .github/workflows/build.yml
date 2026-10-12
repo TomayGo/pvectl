@@ -1,0 +1,63 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # git describe needs the tags
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          [ -z "$out" ] || { echo "not gofmt'd:"; echo "$out"; exit 1; }
+      - run: go vet ./...
+      - run: go test ./...
+
+      # The version string must be identical on every node: a rolling handoff
+      # refuses a peer whose `pvectl --version` differs. Tags give 0.2.6,
+      # anything else 0.2.5-2-gf720bd5.
+      - name: build
+        run: |
+          version=$(git describe --tags --always)
+          version=${version#v}
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags="-s -w -X main.version=$version" -o dist/pvectl ./cmd/pvectl
+          ./dist/pvectl --version
+          (cd dist && sha256sum pvectl > SHA256SUMS)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pvectl
+          path: dist/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: pvectl
+          path: dist
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/pvectl dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
