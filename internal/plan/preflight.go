@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tamago/pvectl/internal/state"
+	"github.com/TomayGo/pvectl/internal/state"
 )
 
 type Status string

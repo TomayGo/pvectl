@@ -6,8 +6,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/tamago/pvectl/internal/apt"
-	"github.com/tamago/pvectl/internal/talos"
+	"github.com/TomayGo/pvectl/internal/apt"
+	"github.com/TomayGo/pvectl/internal/talos"
 )
 
 // An upgrade is a reboot with two installs slotted in after the drain:

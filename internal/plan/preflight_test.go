@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	plog "github.com/tamago/pvectl/internal/log"
-	"github.com/tamago/pvectl/internal/state"
+	plog "github.com/TomayGo/pvectl/internal/log"
+	"github.com/TomayGo/pvectl/internal/state"
 )
 
 func lockEnv(t *testing.T, target string) *Env {

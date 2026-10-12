@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	plog "github.com/tamago/pvectl/internal/log"
+	plog "github.com/TomayGo/pvectl/internal/log"
 )
 
 // ServiceProxy is the subset of the k8s client this package needs.

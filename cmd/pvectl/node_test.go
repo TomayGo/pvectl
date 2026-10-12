@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	plog "github.com/tamago/pvectl/internal/log"
-	"github.com/tamago/pvectl/internal/plan"
-	"github.com/tamago/pvectl/internal/state"
+	plog "github.com/TomayGo/pvectl/internal/log"
+	"github.com/TomayGo/pvectl/internal/plan"
+	"github.com/TomayGo/pvectl/internal/state"
 )
 
 // The same node operation is reachable at two depths: `pvectl reboot node X`

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tamago/pvectl/internal/state"
+	"github.com/TomayGo/pvectl/internal/state"
 )
 
 // The peer must run with the operator's flags, but never with --restart (it

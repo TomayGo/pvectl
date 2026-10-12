@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tamago/pvectl/internal/alert"
-	"github.com/tamago/pvectl/internal/wol"
+	"github.com/TomayGo/pvectl/internal/alert"
+	"github.com/TomayGo/pvectl/internal/wol"
 )
 
 // ---------- 1. lock ----------

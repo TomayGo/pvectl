@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/tamago/pvectl/internal/state"
+	"github.com/TomayGo/pvectl/internal/state"
 )
 
 // Command names as recorded in state.json. `resume` and `abort` rebuild a

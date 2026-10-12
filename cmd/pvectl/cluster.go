@@ -9,11 +9,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/tamago/pvectl/internal/alert"
-	"github.com/tamago/pvectl/internal/plan"
-	"github.com/tamago/pvectl/internal/state"
-	"github.com/tamago/pvectl/internal/talos"
-	"github.com/tamago/pvectl/internal/wol"
+	"github.com/TomayGo/pvectl/internal/alert"
+	"github.com/TomayGo/pvectl/internal/plan"
+	"github.com/TomayGo/pvectl/internal/state"
+	"github.com/TomayGo/pvectl/internal/talos"
+	"github.com/TomayGo/pvectl/internal/wol"
 )
 
 // freezeFlags is the full stop used by `shutdown cluster`. Unlike a single-node

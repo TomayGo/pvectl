@@ -3,7 +3,7 @@ package plan
 import (
 	"testing"
 
-	"github.com/tamago/pvectl/internal/state"
+	"github.com/TomayGo/pvectl/internal/state"
 )
 
 // Re-running a command instead of `resume` starts a fresh state, but the flags

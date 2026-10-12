@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/tamago/pvectl/internal/plan"
-	"github.com/tamago/pvectl/internal/state"
+	"github.com/TomayGo/pvectl/internal/plan"
+	"github.com/TomayGo/pvectl/internal/state"
 )
 
 func newPreflightCmd() *cobra.Command {

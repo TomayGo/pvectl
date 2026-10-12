@@ -5,9 +5,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/tamago/pvectl/internal/config"
-	"github.com/tamago/pvectl/internal/plan"
-	"github.com/tamago/pvectl/internal/talos"
+	"github.com/TomayGo/pvectl/internal/config"
+	"github.com/TomayGo/pvectl/internal/plan"
+	"github.com/TomayGo/pvectl/internal/talos"
 )
 
 // Completion reads node names from the live config rather than a baked-in

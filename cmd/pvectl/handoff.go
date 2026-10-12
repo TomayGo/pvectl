@@ -13,11 +13,11 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/tamago/pvectl/internal/config"
-	plog "github.com/tamago/pvectl/internal/log"
-	"github.com/tamago/pvectl/internal/plan"
-	"github.com/tamago/pvectl/internal/remote"
-	"github.com/tamago/pvectl/internal/state"
+	"github.com/TomayGo/pvectl/internal/config"
+	plog "github.com/TomayGo/pvectl/internal/log"
+	"github.com/TomayGo/pvectl/internal/plan"
+	"github.com/TomayGo/pvectl/internal/remote"
+	"github.com/TomayGo/pvectl/internal/state"
 )
 
 // A rolling run cannot reboot the node it runs on: the process would die

@@ -13,14 +13,14 @@ import (
 	"os"
 	"time"
 
-	"github.com/tamago/pvectl/internal/alert"
-	"github.com/tamago/pvectl/internal/apt"
-	"github.com/tamago/pvectl/internal/config"
-	"github.com/tamago/pvectl/internal/k8s"
-	plog "github.com/tamago/pvectl/internal/log"
-	"github.com/tamago/pvectl/internal/pve"
-	"github.com/tamago/pvectl/internal/state"
-	"github.com/tamago/pvectl/internal/talos"
+	"github.com/TomayGo/pvectl/internal/alert"
+	"github.com/TomayGo/pvectl/internal/apt"
+	"github.com/TomayGo/pvectl/internal/config"
+	"github.com/TomayGo/pvectl/internal/k8s"
+	plog "github.com/TomayGo/pvectl/internal/log"
+	"github.com/TomayGo/pvectl/internal/pve"
+	"github.com/TomayGo/pvectl/internal/state"
+	"github.com/TomayGo/pvectl/internal/talos"
 )
 
 type Options struct {

@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/tamago/pvectl/internal/config"
-	"github.com/tamago/pvectl/internal/plan"
+	"github.com/TomayGo/pvectl/internal/config"
+	"github.com/TomayGo/pvectl/internal/plan"
 )
 
 func newConfigCmd() *cobra.Command {

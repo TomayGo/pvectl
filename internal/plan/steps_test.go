@@ -3,7 +3,7 @@ package plan
 import (
 	"testing"
 
-	"github.com/tamago/pvectl/internal/config"
+	"github.com/TomayGo/pvectl/internal/config"
 )
 
 // State round-trips through JSON, so a []int written by one invocation comes

@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	plog "github.com/tamago/pvectl/internal/log"
+	plog "github.com/TomayGo/pvectl/internal/log"
 )
 
 // RootCAPath is the cluster CA that signs every node's pveproxy certificate.

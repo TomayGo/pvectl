@@ -12,7 +12,7 @@ import (
 	"net"
 	"syscall"
 
-	plog "github.com/tamago/pvectl/internal/log"
+	plog "github.com/TomayGo/pvectl/internal/log"
 )
 
 // Ports 9 (discard) and 7 (echo) are both conventional for WoL; firmware

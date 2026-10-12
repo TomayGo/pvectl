@@ -1,4 +1,4 @@
-module github.com/tamago/pvectl
+module github.com/TomayGo/pvectl
 
 go 1.26.6
 

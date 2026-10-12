@@ -25,7 +25,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/kubectl/pkg/drain"
 
-	plog "github.com/tamago/pvectl/internal/log"
+	plog "github.com/TomayGo/pvectl/internal/log"
 )
 
 type Client struct {

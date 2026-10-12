@@ -20,7 +20,7 @@ import (
 	talosclient "github.com/siderolabs/talos/pkg/machinery/client"
 	configres "github.com/siderolabs/talos/pkg/machinery/resources/config"
 
-	plog "github.com/tamago/pvectl/internal/log"
+	plog "github.com/TomayGo/pvectl/internal/log"
 )
 
 type Client struct {

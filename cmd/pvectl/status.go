@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/tamago/pvectl/internal/alert"
-	"github.com/tamago/pvectl/internal/plan"
-	"github.com/tamago/pvectl/internal/state"
+	"github.com/TomayGo/pvectl/internal/alert"
+	"github.com/TomayGo/pvectl/internal/plan"
+	"github.com/TomayGo/pvectl/internal/state"
 )
 
 func newStatusCmd() *cobra.Command {

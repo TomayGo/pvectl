@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 
-	"github.com/tamago/pvectl/internal/config"
-	plog "github.com/tamago/pvectl/internal/log"
-	"github.com/tamago/pvectl/internal/talos"
+	"github.com/TomayGo/pvectl/internal/config"
+	plog "github.com/TomayGo/pvectl/internal/log"
+	"github.com/TomayGo/pvectl/internal/talos"
 )
 
 // resolveTalosAlias turns --talos-version latest / latest-patch into a release

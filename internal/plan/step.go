@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tamago/pvectl/internal/state"
+	"github.com/TomayGo/pvectl/internal/state"
 )
 
 // Step is one unit of a maintenance operation.

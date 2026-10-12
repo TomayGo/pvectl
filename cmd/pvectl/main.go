@@ -19,9 +19,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/tamago/pvectl/internal/config"
-	plog "github.com/tamago/pvectl/internal/log"
-	"github.com/tamago/pvectl/internal/plan"
+	"github.com/TomayGo/pvectl/internal/config"
+	plog "github.com/TomayGo/pvectl/internal/log"
+	"github.com/TomayGo/pvectl/internal/plan"
 )
 
 var version = "dev"

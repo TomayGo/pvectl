@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	plog "github.com/tamago/pvectl/internal/log"
-	"github.com/tamago/pvectl/internal/remote"
+	plog "github.com/TomayGo/pvectl/internal/log"
+	"github.com/TomayGo/pvectl/internal/remote"
 )
 
 type Client struct {
