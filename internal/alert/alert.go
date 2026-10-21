@@ -146,10 +146,28 @@ func (c *Client) DeleteSilence(ctx context.Context, id string) error {
 		return nil
 	}
 	if _, err := c.proxy.ProxyRequest(ctx, "DELETE", c.AM.Namespace, c.AM.Service, c.AM.Port, "/api/v2/silence/"+id, nil); err != nil {
+		// Alertmanager drops expired silences after its retention (5 days by
+		// default), and DELETE on a dropped one is a 404. A window held open
+		// longer than that -- a node brought back by hand, say -- would then
+		// never close. A 404 alone could also mean a missing Service, so ask
+		// Alertmanager whether the silence is still there before letting it go.
+		if all, lerr := c.ListSilences(ctx); lerr == nil && !activeSilence(all, id) {
+			c.log.Infof("silence %s already expired", id)
+			return nil
+		}
 		return fmt.Errorf("expire silence %s: %w", id, err)
 	}
 	c.log.Infof("silence %s expired", id)
 	return nil
+}
+
+func activeSilence(all []Silence, id string) bool {
+	for _, s := range all {
+		if s.ID == id {
+			return s.Status.State != "expired"
+		}
+	}
+	return false
 }
 
 // ListSilences returns active silences. doctor filters these by CreatedBy.

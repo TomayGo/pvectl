@@ -1,8 +1,12 @@
 package alert
 
 import (
+	"context"
+	"errors"
 	"regexp"
 	"testing"
+
+	plog "github.com/TomayGo/pvectl/internal/log"
 )
 
 // The instance matcher is a regex, so the dots in an IP have to be escaped --
@@ -36,5 +40,42 @@ func TestNodeMatchersWithoutIPs(t *testing.T) {
 	ms := NodeMatchers("pve-1", "talos-cp-1", nil)
 	if len(ms) != 1 {
 		t.Fatalf("got %d matchers, want just the node one", len(ms))
+	}
+}
+
+type fakeProxy struct {
+	deleteErr error
+	listBody  string
+	listErr   error
+}
+
+func (f fakeProxy) ProxyRequest(_ context.Context, method, _, _ string, _ int, _ string, _ []byte) ([]byte, error) {
+	if method == "DELETE" {
+		return nil, f.deleteErr
+	}
+	return []byte(f.listBody), f.listErr
+}
+
+// A maintenance window left open past Alertmanager's retention finds its
+// silences gone; closing it must not fail on that, but must still fail when
+// the silence is live or Alertmanager cannot be asked.
+func TestDeleteSilenceAlreadyGone(t *testing.T) {
+	notFound := errors.New("the server could not find the requested resource")
+	cases := []struct {
+		name    string
+		proxy   fakeProxy
+		wantErr bool
+	}{
+		{"deleted", fakeProxy{}, false},
+		{"purged", fakeProxy{deleteErr: notFound, listBody: `[{"id":"other","status":{"state":"active"}}]`}, false},
+		{"expired", fakeProxy{deleteErr: notFound, listBody: `[{"id":"s1","status":{"state":"expired"}}]`}, false},
+		{"still active", fakeProxy{deleteErr: notFound, listBody: `[{"id":"s1","status":{"state":"active"}}]`}, true},
+		{"unreachable", fakeProxy{deleteErr: notFound, listErr: notFound}, true},
+	}
+	for _, tc := range cases {
+		c := New(tc.proxy, Endpoint{}, Endpoint{}, plog.Discard(), false)
+		if err := c.DeleteSilence(context.Background(), "s1"); (err != nil) != tc.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", tc.name, err, tc.wantErr)
+		}
 	}
 }
