@@ -1,6 +1,6 @@
 module github.com/TomayGo/pvectl
 
-go 1.26.6
+go 1.26.10
 
 require (
 	github.com/cosi-project/runtime v1.14.1
