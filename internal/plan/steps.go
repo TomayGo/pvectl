@@ -3,11 +3,11 @@ package plan
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/TomayGo/pvectl/internal/alert"
+	"github.com/TomayGo/pvectl/internal/pve"
 	"github.com/TomayGo/pvectl/internal/wol"
 )
 
@@ -188,86 +188,148 @@ func undoCephFlags(ctx context.Context, e *Env) error {
 
 // ---------- 5. HA evacuation ----------
 
+// haStep names the HA evacuation step. restore and doctor read its recorded
+// ownership of the node's HA maintenance.
+const haStep = "ha-evacuate"
+
+// haOwnedKey records that this maintenance window, not someone else, put the
+// node into HA maintenance -- the same split as ceph-flags' set_by_us.
+const haOwnedKey = "maintenance_set_by_us"
+
+// haAckTimeout bounds the wait for the CRM to take a request off its queue. It
+// runs every ~10 s, so this only fires when the CRM is not running at all.
+const haAckTimeout = 2 * time.Minute
+
+// stepHAEvacuate puts the node into HA maintenance and waits for the CRM to
+// move its resources off.
+//
+// pvectl used to pick a target and migrate each resource itself. That cannot
+// work with PVE 9 node-affinity rules: a strict rule refuses a node outside its
+// list, and a non-strict one only lets a resource sit on the highest-priority
+// online node -- so a resource moved anywhere else while the node it prefers
+// is up is pulled straight back. Maintenance takes the node out of the CRM's
+// online set, so the CRM itself picks a destination its rules allow, and keeps
+// anything from being placed on the node (failback included) until it ends.
 func stepHAEvacuate() Step {
 	return Step{
-		Name: "ha-evacuate",
-		Desc: "migrate HA resources off the node",
+		Name: haStep,
+		Desc: "put the node in HA maintenance; HA moves its resources off",
 		Skip: func(ctx context.Context, e *Env) (bool, string, error) {
-			ha, err := e.PVE.HAStatus(ctx)
+			res, err := e.PVE.HAResources(ctx)
 			if err != nil {
 				return false, "", err
 			}
-			if len(ha.ServicesOn(e.Target)) == 0 {
-				return true, "no HA resources on " + e.Target, nil
+			// With nothing configured the CRM may not even be running, and
+			// there is nothing to keep off the node.
+			if len(res) == 0 && !haOwned(e) {
+				return true, "no HA resources are configured", nil
 			}
 			return false, "", nil
 		},
 		Do: func(ctx context.Context, e *Env) error { return evacuateHA(ctx, e) },
-		// Deliberately not reversed: moving a service back costs another
-		// outage (CTs migrate offline), and nothing is safer for having been
-		// put back where it started.
-		Undo: nil,
+		// Ending maintenance is what undoes it. The CRM then moves the
+		// resources that left back to this node (it records where each came
+		// from) -- PVE's behaviour, and the only one a preferring rule allows.
+		Undo:          func(ctx context.Context, e *Env) error { return leaveHAMaintenance(ctx, e) },
+		UndoIfStarted: true,
 	}
+}
+
+// haOwned reports whether this window put the node into HA maintenance.
+func haOwned(e *Env) bool {
+	v, _ := dataOf(e, haStep, haOwnedKey).(bool)
+	return v
 }
 
 func evacuateHA(ctx context.Context, e *Env) error {
-	ha, err := e.PVE.HAStatus(ctx)
+	ms, err := e.PVE.HAManagerStatus(ctx)
 	if err != nil {
 		return err
 	}
-	svcs := ha.ServicesOn(e.Target)
-	if len(svcs) == 0 {
-		return nil
+	if ms.Disarmed() {
+		return fmt.Errorf("the HA stack is disarmed, and the CRM ignores maintenance requests while it is; re-arm it (ha-manager arm-ha) and `pvectl resume`")
 	}
-	targets, err := e.migrationTargets(ctx)
-	if err != nil {
-		return err
-	}
-	if len(targets) == 0 {
-		return fmt.Errorf("no other node is available to receive HA resources")
-	}
-	var moved []string
-	for i, s := range svcs {
-		dest := targets[i%len(targets)]
-		if strings.HasPrefix(s.SID, "ct:") {
-			e.Log.Warnf("%s is a container: HA migration is offline, so it will be briefly unavailable", s.SID)
+	active := ms.ActiveServicesOn(e.Target)
+	switch {
+	case ms.MaintenanceRequested(e.Target) || ms.NodeState(e.Target) == "maintenance":
+		if haOwned(e) {
+			e.Log.Infof("%s is already in HA maintenance from an earlier attempt at this maintenance; keeping ownership", e.Target)
+		} else {
+			e.Log.Infof("%s is already in HA maintenance; leaving it to whoever put it there", e.Target)
 		}
-		e.Log.Infof("migrating %s -> %s", s.SID, dest)
-		if err := e.PVE.HAMigrate(ctx, s.SID, dest); err != nil {
-			return fmt.Errorf("migrate %s to %s: %w", s.SID, dest, err)
+	default:
+		for _, s := range active {
+			if strings.HasPrefix(s.SID, "ct:") {
+				e.Log.Warnf("%s is a container: HA relocates it offline, so it will be briefly unavailable", s.SID)
+			}
 		}
-		moved = append(moved, s.SID)
+		if len(active) > 0 {
+			e.Log.Infof("HA will move %s where its rules allow", strings.Join(sids(active), ", "))
+		}
+		if err := e.PVE.SetHANodeMaintenance(ctx, e.Target, true); err != nil {
+			return err
+		}
+		// Persist ownership before waiting: if this run dies now, abort and
+		// restore still know the maintenance is theirs to end.
+		e.State.SetData(haStep, haOwnedKey, true)
+		if err := e.State.Save(); err != nil {
+			e.Log.Warnf("could not persist HA maintenance ownership: %v", err)
+		}
 	}
-	e.State.SetData("ha-evacuate", "migrated", moved)
+	moved := toStrings(dataOf(e, haStep, "migrated"))
+	for _, s := range active {
+		if !contains(moved, s.SID) {
+			moved = append(moved, s.SID)
+		}
+	}
+	e.State.SetData(haStep, "migrated", moved)
 	if e.Opts.DryRun {
 		return nil
 	}
-	return waitHAOff(ctx, e, e.Opts.TimeoutMigrate)
+	return waitHAEvacuated(ctx, e, e.Opts.TimeoutMigrate, moved)
 }
 
-// waitHAOff blocks until no HA service is left on the target. Driving this
-// explicitly (rather than trusting shutdown_policy=migrate) is what gives the
-// operation a progress report and a timeout.
-func waitHAOff(ctx context.Context, e *Env, timeout time.Duration) error {
+// waitHAEvacuated blocks until the CRM has the node in maintenance and no
+// active resource is left on it. Waiting here, rather than trusting
+// shutdown_policy, is what gives the operation a progress report and a
+// timeout.
+func waitHAEvacuated(ctx context.Context, e *Env, timeout time.Duration, moved []string) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		ha, err := e.PVE.HAStatus(ctx)
+		ms, err := e.PVE.HAManagerStatus(ctx)
 		if err != nil {
 			return err
 		}
-		left := ha.ServicesOn(e.Target)
-		if len(left) == 0 {
-			e.Log.Infof("no HA resources remain on %s", e.Target)
+		left := ms.ActiveServicesOn(e.Target)
+		state := ms.NodeState(e.Target)
+		if state == "maintenance" && len(left) == 0 {
+			e.Log.Infof("%s is in HA maintenance; no active HA resources remain on it", e.Target)
+			for _, s := range ms.Services() {
+				if contains(moved, s.SID) {
+					e.Log.Infof("  %s is on %s (%s)", s.SID, s.Node, s.State)
+				}
+			}
 			return nil
 		}
 		if time.Now().After(deadline) {
 			var names []string
 			for _, s := range left {
-				names = append(names, fmt.Sprintf("%s (%s)", s.SID, s.State))
+				d := fmt.Sprintf("%s (%s)", s.SID, s.State)
+				if s.Target != "" && s.Target != s.Node {
+					d = fmt.Sprintf("%s (%s %s -> %s)", s.SID, s.State, s.Node, s.Target)
+				}
+				names = append(names, d)
 			}
-			return fmt.Errorf("HA resources still on %s after %s: %s", e.Target, timeout, strings.Join(names, ", "))
+			detail := "none"
+			if len(names) > 0 {
+				detail = strings.Join(names, ", ")
+			}
+			return fmt.Errorf("after %s %s is in HA state %q (maintenance requested: %v), active resources still on it: %s"+
+				" -- a strict node-affinity rule with no other available node keeps a resource in place (see the ha-affinity preflight check);"+
+				" `pvectl resume` keeps waiting, `pvectl abort` ends the maintenance",
+				timeout, e.Target, state, ms.MaintenanceRequested(e.Target), detail)
 		}
-		e.Log.Debugf("waiting for %d HA resource(s) to leave %s", len(left), e.Target)
+		e.Log.Debugf("waiting for HA: %s is %q, %d active resource(s) left", e.Target, state, len(left))
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -276,27 +338,60 @@ func waitHAOff(ctx context.Context, e *Env, timeout time.Duration) error {
 	}
 }
 
-// migrationTargets ranks the other nodes by free memory, most free first.
-func (e *Env) migrationTargets(ctx context.Context) ([]string, error) {
-	type cand struct {
-		name string
-		free int64
+// leaveHAMaintenance ends the node's HA maintenance if this window started it,
+// and waits for the CRM to take the request. It does not wait for the
+// resources to return: the CRM moves them back on its own, and nothing about
+// the node's health depends on where they run.
+func leaveHAMaintenance(ctx context.Context, e *Env) error {
+	if !haOwned(e) {
+		return nil
 	}
-	var cs []cand
-	for _, n := range e.OtherNodes() {
-		ns, err := e.PVE.NodeStatus(ctx, n)
-		if err != nil {
-			e.Log.Warnf("cannot read %s status, skipping as a migration target: %v", n, err)
-			continue
+	if err := e.PVE.SetHANodeMaintenance(ctx, e.Target, false); err != nil {
+		return err
+	}
+	if !e.Opts.DryRun {
+		deadline := time.Now().Add(haAckTimeout)
+		for {
+			ms, err := e.PVE.HAManagerStatus(ctx)
+			if err != nil {
+				return err
+			}
+			if !ms.MaintenanceRequested(e.Target) {
+				e.Log.Infof("HA maintenance ended on %s (CRM state %q)", e.Target, ms.NodeState(e.Target))
+				if back := ms.ReturningTo(e.Target); len(back) > 0 {
+					e.Log.Infof("HA moves %s back to %s", strings.Join(back, ", "), e.Target)
+				}
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("the CRM has not taken the request to end maintenance on %s after %s; check `ha-manager status`", e.Target, haAckTimeout)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(5 * time.Second):
+			}
 		}
-		cs = append(cs, cand{n, ns.Memory.Total - ns.Memory.Used})
 	}
-	sort.Slice(cs, func(i, j int) bool { return cs[i].free > cs[j].free })
-	out := make([]string, 0, len(cs))
-	for _, c := range cs {
-		out = append(out, c.name)
+	e.State.SetData(haStep, haOwnedKey, false)
+	return nil
+}
+
+func sids(ss []pve.HAService) []string {
+	out := make([]string, 0, len(ss))
+	for _, s := range ss {
+		out = append(out, s.SID)
 	}
-	return out, nil
+	return out
+}
+
+func contains(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------- 6. k8s drain ----------
@@ -648,13 +743,34 @@ func waitFor(ctx context.Context, e *Env, deadline time.Time, what string, probe
 
 // ---------- 13. restore ----------
 
+// restoreHAMaintenance ends the HA maintenance this window started. One it did
+// not start is reported and left alone, like a ceph flag someone else set.
+func restoreHAMaintenance(ctx context.Context, e *Env) error {
+	if haOwned(e) {
+		return leaveHAMaintenance(ctx, e)
+	}
+	if dataOf(e, haStep, haOwnedKey) != nil {
+		return nil // recorded, and already ended
+	}
+	ms, err := e.PVE.HAManagerStatus(ctx)
+	if err != nil {
+		e.Log.Warnf("cannot read HA manager status: %v", err)
+		return nil
+	}
+	if ms.MaintenanceRequested(e.Target) || ms.NodeState(e.Target) == "maintenance" {
+		e.Log.Warnf("%s is in HA maintenance, but this maintenance has no record of starting it; leaving it alone -- end it with `ha-manager crm-command node-maintenance disable %s` or `pvectl doctor --fix`",
+			e.Target, e.Target)
+	}
+	return nil
+}
+
 // stepRestore is the deliberate inverse of steps 3-6 plus the guests that have
 // no onboot flag. It is a forward step rather than a rollback because it runs
 // on the success path, after the node is back.
 func stepRestore() Step {
 	return Step{
 		Name: "restore",
-		Desc: "uncordon, clear ceph flags, start guests, lift the silence",
+		Desc: "uncordon, clear ceph flags, end HA maintenance, start guests, lift the silence",
 		Do: func(ctx context.Context, e *Env) error {
 			var errs []string
 			if err := undoDrain(ctx, e); err != nil {
@@ -665,6 +781,9 @@ func stepRestore() Step {
 			}
 			if err := undoCephFlags(ctx, e); err != nil {
 				errs = append(errs, fmt.Sprintf("ceph flags: %v", err))
+			}
+			if err := restoreHAMaintenance(ctx, e); err != nil {
+				errs = append(errs, fmt.Sprintf("ha maintenance: %v", err))
 			}
 			if len(e.Node.StartAfterBoot) > 0 {
 				e.Log.Infof("starting guests without onboot: %v", e.Node.StartAfterBoot)
@@ -798,7 +917,7 @@ func (e *Env) impactSummary() string {
 	var parts []string
 	if e.State != nil && e.State.Command == CmdMaintEnter {
 		parts = append(parts, fmt.Sprintf("%s cordoned and drained", e.Node.Talos.Name))
-		parts = append(parts, "HA resources evacuated")
+		parts = append(parts, "HA maintenance (resources moved off)")
 		parts = append(parts, "guests keep running, host stays powered")
 		return strings.Join(parts, "; ")
 	}

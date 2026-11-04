@@ -349,7 +349,8 @@ func impactLines(e *plan.Env, command string) string {
 	b.WriteString("Impact:\n")
 	if command == plan.CmdMaintEnter {
 		fmt.Fprintf(&b, "  - %s is cordoned and drained; its pods move to the other two nodes\n", e.Node.Talos.Name)
-		fmt.Fprintf(&b, "  - HA resources leave %s (containers migrate offline: a brief outage each)\n", e.Target)
+		fmt.Fprintf(&b, "  - %s enters HA maintenance: HA moves its resources where their rules allow, and back afterwards\n", e.Target)
+		fmt.Fprintf(&b, "    (containers relocate offline: a brief outage each way)\n")
 		fmt.Fprintf(&b, "  - ceph noout/norebalance set: no recovery starts while you work\n")
 		fmt.Fprintf(&b, "  - guests keep running and the host stays powered\n")
 		return b.String()

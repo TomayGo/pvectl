@@ -26,6 +26,11 @@ type Step struct {
 	// Irreversible marks steps that Undo cannot address, so `abort` can report
 	// honestly instead of silently skipping them.
 	Irreversible bool
+	// UndoIfStarted makes rollback also undo the step when it started but did
+	// not finish -- for steps whose effect is in place long before they
+	// complete, like a maintenance request whose wait timed out. Its Undo
+	// must cope with having nothing to undo.
+	UndoIfStarted bool
 }
 
 type Runner struct {
@@ -134,6 +139,24 @@ func (r *Runner) runStep(ctx context.Context, s *Step) error {
 	return st.Save()
 }
 
+// undoable lists, oldest first, the steps rollback has to consider: the
+// completed ones, plus those that started without finishing and ask to be
+// undone anyway.
+func (r *Runner) undoable() []string {
+	var out []string
+	for _, st := range r.Env.State.Steps {
+		switch st.Status {
+		case state.StepDone:
+			out = append(out, st.Name)
+		case state.StepRunning, state.StepFailed:
+			if s := r.step(st.Name); s != nil && s.UndoIfStarted {
+				out = append(out, st.Name)
+			}
+		}
+	}
+	return out
+}
+
 // Rollback walks the completed steps backwards and calls their Undo.
 //
 // It keeps going after a failure on purpose: leaving noout set because
@@ -141,7 +164,7 @@ func (r *Runner) runStep(ctx context.Context, s *Step) error {
 func (r *Runner) Rollback(ctx context.Context) error {
 	e := r.Env
 	st := e.State
-	done := st.CompletedSteps()
+	done := r.undoable()
 	if len(done) == 0 {
 		e.Log.Infof("nothing to roll back")
 		return nil

@@ -150,13 +150,21 @@ func showStatus(ctx context.Context, e *plan.Env) error {
 			parts = append(parts, fmt.Sprintf("%s=%d", n, len(byNode[n])))
 		}
 		lg.Plain("ha               : master %s, placement %s", ha.Master, strings.Join(parts, " "))
-		// HA resources are never moved back after a maintenance -- moving a
-		// container costs an outage. Any imbalance is reported, not corrected.
+		// Placement is the CRM's: node-affinity rules and failback decide it,
+		// and it returns what a maintenance moved away once that ends.
 		for _, n := range e.Cfg.NodeNames() {
 			if len(byNode[n]) > 0 {
 				lg.Plain("                   %s: %s", n, strings.Join(byNode[n], " "))
 			}
 		}
+	}
+	if ms, err := e.PVE.HAManagerStatus(ctx); err != nil {
+		lg.Plain("ha maintenance   : unreadable (%v)", err)
+	} else if nodes := ms.MaintenanceNodes(); len(nodes) == 0 {
+		lg.Plain("ha maintenance   : none")
+	} else {
+		leftovers++
+		lg.Plain("ha maintenance   : %s", strings.Join(nodes, " "))
 	}
 
 	if sil, err := e.Alert.OwnSilences(ctx); err != nil {
@@ -252,9 +260,11 @@ func newAbortCmd() *cobra.Command {
 		Use:   "abort",
 		Short: "Roll back the interrupted run recorded in state.json",
 		Long: strings.TrimSpace(`
-Walks the completed steps backwards and undoes each one: uncordon, clear the
+Walks the completed steps backwards and undoes each one: uncordon, end the HA
+node maintenance pvectl started (HA then moves the resources back), clear the
 ceph flags pvectl set, restart guests it stopped, expire its silences and
-release the lock.
+release the lock. The HA maintenance is ended even when the evacuation itself
+was what failed.
 
 Steps that cannot be undone -- a host that has already been powered off -- are
 reported rather than silently skipped, because the operator still has to deal
@@ -422,6 +432,26 @@ func runDoctor(ctx context.Context, e *plan.Env, fix bool) error {
 		}
 	} else {
 		lg.Plain("[ok]   silences     : none")
+	}
+
+	// HA node maintenance left on. An open run owns its own and ends it in
+	// restore or abort; with none open, nothing else will.
+	if ms, err := e.PVE.HAManagerStatus(ctx); err != nil {
+		lg.Plain("[fail] ha maint.    : %v", err)
+	} else if nodes := ms.MaintenanceNodes(); len(nodes) > 0 {
+		found++
+		lg.Plain("[warn] ha maint.    : %s in HA maintenance", strings.Join(nodes, " "))
+		if fix {
+			for _, n := range nodes {
+				if err := e.PVE.SetHANodeMaintenance(ctx, n, false); err != nil {
+					lg.Plain("       -> ending maintenance on %s failed: %v", n, err)
+					continue
+				}
+				lg.Plain("       -> maintenance end requested for %s (HA moves its resources back)", n)
+			}
+		}
+	} else {
+		lg.Plain("[ok]   ha maint.    : no node in HA maintenance")
 	}
 
 	// a lock with no run behind it
