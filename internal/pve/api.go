@@ -239,9 +239,9 @@ type HAStatus struct {
 	LRM      map[string]string
 }
 
-// ServicesOn lists the HA services currently placed on a node. groups.cfg is
-// empty in this cluster, so placement floats -- it must be read every time
-// rather than assumed.
+// ServicesOn lists the HA services currently placed on a node, in any state.
+// Placement is the CRM's to decide (node-affinity rules, failback), so it must
+// be read every time rather than assumed.
 func (h *HAStatus) ServicesOn(node string) []HAStatusEntry {
 	var out []HAStatusEntry
 	for _, s := range h.Services {
@@ -272,14 +272,6 @@ func (c *Client) HAStatus(ctx context.Context) (*HAStatus, error) {
 	}
 	sort.Slice(st.Services, func(i, j int) bool { return st.Services[i].SID < st.Services[j].SID })
 	return st, nil
-}
-
-// HAMigrate asks the CRM to move one service. We drive this explicitly rather
-// than relying on datacenter.cfg shutdown_policy=migrate, because the implicit
-// path gives no progress and no timeout to hang a decision on.
-func (c *Client) HAMigrate(ctx context.Context, sid, target string) error {
-	return c.Post(ctx, "/cluster/ha/resources/"+url.PathEscape(sid)+"/migrate",
-		url.Values{"node": {target}}, nil)
 }
 
 // ---------- resources ----------

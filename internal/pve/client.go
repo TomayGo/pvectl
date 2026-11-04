@@ -1,9 +1,10 @@
 // Package pve is the Proxmox VE API client.
 //
 // Everything pvectl does on the Proxmox side goes through here -- no ssh, no
-// shelling out to ceph/ha-manager. That is what lets the binary be static and
-// lets pve-2 drive a shutdown of pve-1 without needing anything installed on
-// pve-1 beyond a running pveproxy.
+// shelling out to ceph. That is what lets the binary be static and lets pve-2
+// drive a shutdown of pve-1 without needing anything installed on pve-1 beyond
+// a running pveproxy. The one exception is HA node maintenance, which PVE only
+// offers through the ha-manager CLI of whichever node pvectl runs on (ha.go).
 package pve
 
 import (

@@ -116,6 +116,8 @@ Preflight blocks, and says why, when:
 - a PodDisruptionBudget would make the drain hang
 - etcd is not 3/3
 - the remaining nodes lack the memory for the HA resources being evacuated
+- a strict HA node-affinity rule leaves a resource on the target with no other
+  node it may run on (`ha-affinity`; it also shows where HA will put each one)
 - a backup or replication job is running on the target
 - you are running it *on* the node you asked it to stop
 - your own SSH session arrives over the Wi-Fi that the target's AP guest serves
@@ -125,17 +127,29 @@ Each check has a name that `--skip-check` accepts, listed by `pvectl --help`.
 
 ## Notes on the implementation
 
-- **All Proxmox work goes through the API**, never ssh or `ceph`/`ha-manager` --
-  with one exception: `upgrade` runs apt over `ssh root@<lan_ip>`, because the
-  API's only way to install packages is the web UI's interactive terminal. It
-  uses the root ssh trust PVE itself sets up between cluster nodes.
+- **All Proxmox work goes through the API**, never ssh or `ceph` -- with two
+  exceptions. `upgrade` runs apt over `ssh root@<lan_ip>`, because the API's
+  only way to install packages is the web UI's interactive terminal; it uses the
+  root ssh trust PVE itself sets up between cluster nodes. And HA node
+  maintenance is requested with the local
+  `ha-manager crm-command node-maintenance enable|disable <node>`, which has no
+  API endpoint (its state is read back through the API).
   Requests aimed at a node are sent through a *different* node's pveproxy: a
   `POST /nodes/pve-1/status --command shutdown` delivered to pve-1 loses its
   connection before the reply arrives.
-- **HA evacuation is explicit** rather than relying on
-  `shutdown_policy=migrate`, so it has a progress report and a timeout. HA
-  resources are *not* moved back afterwards -- containers migrate offline, and
-  putting them back costs a second outage. `status` reports the imbalance.
+- **HA evacuation is HA node maintenance.** pvectl does not pick targets: it
+  puts the node into HA maintenance and waits, with a timeout, until the CRM
+  reports the node in maintenance and no active resource is left on it. The
+  CRM chooses each destination by its node-affinity rules -- a strict rule
+  limits the nodes, and a non-strict one only lets a resource sit on the
+  highest-priority node available, so a resource moved anywhere else by hand
+  while the node it prefers is still online is pulled straight back. Under
+  maintenance the node is out of the CRM's placement until the window ends:
+  `restore` (and `abort`, even when the evacuation itself failed) ends it, and
+  the CRM then moves the resources back where they came from (containers
+  relocate offline, so that is a second brief outage). Maintenance pvectl did
+  not start is left alone; `status` and `doctor` report a node left in HA
+  maintenance, and `doctor --fix` ends it.
 - **Wake-on-LAN goes to both bond slaves.** The bonds are balance-alb with
   `wol=g` on both NICs; while the machine is off, which PHY the switch delivers
   to is not predictable.
@@ -158,7 +172,9 @@ go test ./...
 Covers the parts that cannot be exercised safely against the live cluster: the
 lock's exclusion and adoption, state round-trips through JSON, WoL packet
 construction, silence-matcher regex escaping, the shape of each plan, apt
-simulation parsing and its refusal rules, and installer-image tag handling.
+simulation parsing and its refusal rules, installer-image tag handling, HA
+manager-status decoding and the node-affinity placement prediction, and that
+abort ends an HA maintenance whose evacuation did not finish.
 
 Test fixtures use documentation addresses only: IPv4 from RFC 5737
 (`192.0.2.0/24`, `198.51.100.0/24`), locally administered MACs

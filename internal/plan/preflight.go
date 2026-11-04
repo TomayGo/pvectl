@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/TomayGo/pvectl/internal/pve"
 	"github.com/TomayGo/pvectl/internal/state"
 )
 
@@ -74,6 +75,7 @@ var CheckNames = []string{
 	"k8s-drain",
 	"etcd",
 	"ha-capacity",
+	"ha-affinity",
 	"tasks",
 	"guests",
 	"ssh-path",
@@ -131,6 +133,7 @@ func Preflight(ctx context.Context, e *Env, forShutdown bool) *Report {
 	if e.Target != "" {
 		run("k8s-drain", func() { checkDrain(ctx, e, r) })
 		run("ha-capacity", func() { checkHACapacity(ctx, e, r) })
+		run("ha-affinity", func() { checkHAAffinity(ctx, e, r) })
 		run("tasks", func() { checkTasks(ctx, e, r) })
 		run("ephemeral-data", func() { checkEphemeralData(ctx, e, r) })
 		if forShutdown {
@@ -389,6 +392,91 @@ func checkHACapacity(ctx context.Context, e *Env, r *Report) {
 		return
 	}
 	r.add("ha-capacity", Pass, "%s need %s; %s", strings.Join(names, ", "), humanBytes(need), strings.Join(per, ", "))
+}
+
+// checkHAAffinity predicts where the CRM will put each resource once the node
+// is in HA maintenance, and fails when a strict node-affinity rule leaves a
+// resource nowhere to go: the CRM would keep it on the node, and the
+// evacuation would only time out. The CRM makes the real choice; this is the
+// part of it that can be judged before anything moves.
+func checkHAAffinity(ctx context.Context, e *Env, r *Report) {
+	ms, err := e.PVEAll.HAManagerStatus(ctx)
+	if err != nil {
+		r.add("ha-affinity", Fail, "cannot read HA manager status: %v", err)
+		return
+	}
+	var busy []string
+	for _, n := range ms.MaintenanceNodes() {
+		if n != e.Target {
+			busy = append(busy, n)
+		}
+	}
+	active := ms.ActiveServicesOn(e.Target)
+	if len(active) == 0 {
+		if len(busy) > 0 {
+			r.add("ha-affinity", Warn, "no active HA resources on %s, but %s already in HA maintenance", e.Target, strings.Join(busy, ", "))
+			return
+		}
+		r.add("ha-affinity", Pass, "no active HA resources on %s", e.Target)
+		return
+	}
+	if ms.Disarmed() {
+		r.add("ha-affinity", Fail, "the HA stack is disarmed: the CRM would ignore the maintenance request")
+		return
+	}
+	cs, err := e.clusterStatus(ctx)
+	if err != nil {
+		r.add("ha-affinity", Fail, "cannot read cluster status: %v", err)
+		return
+	}
+	rules, err := e.PVEAll.HANodeAffinityRules(ctx)
+	if err != nil {
+		r.add("ha-affinity", Warn, "cannot read HA rules (%v); HA will still place %s by its own rules", err, strings.Join(sids(active), ", "))
+		return
+	}
+	var cluster []string
+	for n := range cs.Nodes {
+		cluster = append(cluster, n)
+	}
+	sort.Strings(cluster)
+	var avail []string
+	for _, n := range cs.Online {
+		if n != e.Target && !contains(busy, n) {
+			avail = append(avail, n)
+		}
+	}
+	var stuck, where []string
+	for _, s := range active {
+		pl := pve.PlaceHA(rules, s.SID, cluster, avail)
+		rule := "no rule"
+		if pl.Rule != "" {
+			rule = "rule " + pl.Rule
+			if pl.Strict {
+				rule += ", strict"
+			}
+		}
+		if len(pl.Allowed) == 0 {
+			stuck = append(stuck, fmt.Sprintf("%s (%s: no allowed node among %s)", s.SID, rule, orNone(avail)))
+			continue
+		}
+		where = append(where, fmt.Sprintf("%s -> %s (%s)", s.SID, strings.Join(pl.Preferred, "|"), rule))
+	}
+	if len(stuck) > 0 {
+		r.add("ha-affinity", Fail, "HA would keep %s on %s", strings.Join(stuck, ", "), e.Target)
+		return
+	}
+	if len(busy) > 0 {
+		r.add("ha-affinity", Warn, "%s; %s already in HA maintenance", strings.Join(where, ", "), strings.Join(busy, ", "))
+		return
+	}
+	r.add("ha-affinity", Pass, "%s", strings.Join(where, ", "))
+}
+
+func orNone(list []string) string {
+	if len(list) == 0 {
+		return "(none)"
+	}
+	return strings.Join(list, ", ")
 }
 
 // checkTasks refuses to proceed while a backup or a storage replication job is
