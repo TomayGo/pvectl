@@ -93,7 +93,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		if err := r.runStep(ctx, s); err != nil {
 			st.Set(s.Name, state.StepFailed, err)
-			_ = st.Save()
+			if serr := st.Save(); serr != nil {
+				e.Log.Warnf("could not persist the failure of %s: %v", s.Name, serr)
+			}
 			e.Log.Errorf("step %s failed: %v", s.Name, err)
 			e.Log.Plain("")
 			e.Log.Plain("The run stopped at step %q. Nothing further was attempted.", s.Name)
@@ -103,7 +105,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 	st.Finished = true
-	_ = st.Save()
+	// Not an error: every step ran. But state.json still calls the run
+	// unfinished, and the operator should hear why `status` will say so.
+	if err := st.Save(); err != nil {
+		e.Log.Warnf("could not persist the finished run: %v", err)
+	}
 	return nil
 }
 
@@ -192,7 +198,9 @@ func (r *Runner) Rollback(ctx context.Context) error {
 			continue
 		}
 		st.Set(name, state.StepUndone, nil)
-		_ = st.Save()
+		if err := st.Save(); err != nil {
+			e.Log.Warnf("could not persist the rollback of %s: %v", name, err)
+		}
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
