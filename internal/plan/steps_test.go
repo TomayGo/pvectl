@@ -95,3 +95,19 @@ func minimalConfig() *config.Config {
 	c.Cluster.CephFlags = []string{"noout", "norebalance"}
 	return c
 }
+
+// doctor, preflight and status all need to tell a leftover of a node
+// maintenance from a flag someone set on purpose.
+func TestSplitCephFlags(t *testing.T) {
+	ours, others := SplitCephFlags([]string{"noout", "norebalance"},
+		map[string]bool{"norebalance": true, "noout": true, "pause": true, "nodown": true, "noscrub": false})
+	if len(ours) != 2 || ours[0] != "noout" || ours[1] != "norebalance" {
+		t.Errorf("ours: %v", ours)
+	}
+	if len(others) != 2 || others[0] != "nodown" || others[1] != "pause" {
+		t.Errorf("others: %v", others)
+	}
+	if ours, others := SplitCephFlags([]string{"noout"}, map[string]bool{"noout": false}); ours != nil || others != nil {
+		t.Errorf("nothing set must give nothing: %v %v", ours, others)
+	}
+}
