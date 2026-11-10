@@ -1,6 +1,8 @@
 package plan
 
 import (
+	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -41,5 +43,32 @@ func TestCheckNamesAreStable(t *testing.T) {
 		"ephemeral-data", "apt-plan", "talos-target"}
 	if !reflect.DeepEqual(CheckNames, want) {
 		t.Errorf("check names:\n got %v\nwant %v", CheckNames, want)
+	}
+}
+
+// A step that keeps going past failures reports them on one line, joined with
+// "; " -- the text state.json records -- while each cause stays reachable.
+func TestJoinErrors(t *testing.T) {
+	if err := joinErrors(nil); err != nil {
+		t.Fatalf("no errors must be nil, got %v", err)
+	}
+	sentinel := errors.New("no route to host")
+	err := joinErrors([]error{
+		fmt.Errorf("unset noout: %w", sentinel),
+		errors.New("unset norebalance: HTTP 500"),
+	})
+	if got, want := err.Error(), "unset noout: no route to host; unset norebalance: HTTP 500"; got != want {
+		t.Errorf("message %q, want %q", got, want)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Error("a joined error must still match its causes")
+	}
+	// Nested the way restore nests undoCephFlags.
+	outer := joinErrors([]error{fmt.Errorf("ceph flags: %w", err), errors.New("silence: gone")})
+	if got, want := outer.Error(), "ceph flags: unset noout: no route to host; unset norebalance: HTTP 500; silence: gone"; got != want {
+		t.Errorf("nested message %q, want %q", got, want)
+	}
+	if !errors.Is(outer, sentinel) {
+		t.Error("a nested joined error must still match its causes")
 	}
 }

@@ -90,12 +90,12 @@ func stepSilence() Step {
 
 func undoSilence(ctx context.Context, e *Env) error {
 	st := e.State.Step(silenceStep)
-	var errs []string
+	var errs []error
 	if st != nil && st.Data != nil {
 		if raw, ok := st.Data["ids"]; ok {
 			for _, id := range toStrings(raw) {
 				if err := e.Alert.DeleteSilence(ctx, id); err != nil {
-					errs = append(errs, err.Error())
+					errs = append(errs, err)
 				}
 			}
 		}
@@ -107,10 +107,7 @@ func undoSilence(ctx context.Context, e *Env) error {
 			e.Log.Warnf("%v", err)
 		}
 	}
-	if len(errs) > 0 {
-		return fmt.Errorf("%s", strings.Join(errs, "; "))
-	}
-	return nil
+	return joinErrors(errs)
 }
 
 // ---------- 4. ceph flags ----------
@@ -170,20 +167,17 @@ func undoCephFlags(ctx context.Context, e *Env) error {
 	if st == nil || st.Data == nil {
 		return nil
 	}
-	var errs []string
+	var errs []error
 	for _, f := range toStrings(st.Data["set_by_us"]) {
 		if err := e.PVE.SetCephFlag(ctx, f, false); err != nil {
-			errs = append(errs, fmt.Sprintf("unset %s: %v", f, err))
+			errs = append(errs, fmt.Errorf("unset %s: %w", f, err))
 			continue
 		}
 		if !e.Opts.DryRun {
 			e.Log.Infof("ceph flag %s cleared", f)
 		}
 	}
-	if len(errs) > 0 {
-		return fmt.Errorf("%s", strings.Join(errs, "; "))
-	}
-	return nil
+	return joinErrors(errs)
 }
 
 // ---------- 5. HA evacuation ----------
@@ -522,7 +516,7 @@ func stopGuests(ctx context.Context, e *Env) error {
 }
 
 func startGuests(ctx context.Context, e *Env, ids []int) error {
-	var errs []string
+	var errs []error
 	for _, id := range ids {
 		kind := "qemu"
 		for _, g := range e.Node.StopGuests {
@@ -539,19 +533,16 @@ func startGuests(ctx context.Context, e *Env, ids []int) error {
 		}
 		upid, err := e.PVE.GuestStart(ctx, e.Target, kind, id)
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("start %d: %v", id, err))
+			errs = append(errs, fmt.Errorf("start %d: %w", id, err))
 			continue
 		}
 		if err := e.PVE.WaitTask(ctx, e.Target, upid, 3*time.Minute); err != nil {
-			errs = append(errs, fmt.Sprintf("start %d: %v", id, err))
+			errs = append(errs, fmt.Errorf("start %d: %w", id, err))
 			continue
 		}
 		e.Log.Infof("guest %d started", id)
 	}
-	if len(errs) > 0 {
-		return fmt.Errorf("%s", strings.Join(errs, "; "))
-	}
-	return nil
+	return joinErrors(errs)
 }
 
 // ---------- 9. host power ----------
@@ -768,35 +759,32 @@ func stepRestore() Step {
 		Name: restoreStep,
 		Desc: "uncordon, clear ceph flags, end HA maintenance, start guests, lift the silence",
 		Do: func(ctx context.Context, e *Env) error {
-			var errs []string
+			var errs []error
 			if err := undoDrain(ctx, e); err != nil {
-				errs = append(errs, fmt.Sprintf("uncordon: %v", err))
+				errs = append(errs, fmt.Errorf("uncordon: %w", err))
 			}
 			if st := e.State.Step(cephFlagsStep); st == nil || st.Data["set_by_us"] == nil {
 				e.Log.Warnf("no record of which ceph flags this maintenance set; leaving them alone -- check `pvectl status` and clear with `pvectl doctor --fix` if needed")
 			}
 			if err := undoCephFlags(ctx, e); err != nil {
-				errs = append(errs, fmt.Sprintf("ceph flags: %v", err))
+				errs = append(errs, fmt.Errorf("ceph flags: %w", err))
 			}
 			if err := restoreHAMaintenance(ctx, e); err != nil {
-				errs = append(errs, fmt.Sprintf("ha maintenance: %v", err))
+				errs = append(errs, fmt.Errorf("ha maintenance: %w", err))
 			}
 			if len(e.Node.StartAfterBoot) > 0 {
 				e.Log.Infof("starting guests without onboot: %v", e.Node.StartAfterBoot)
 				if err := startGuests(ctx, e, e.Node.StartAfterBoot); err != nil {
-					errs = append(errs, fmt.Sprintf("start_after_boot: %v", err))
+					errs = append(errs, fmt.Errorf("start_after_boot: %w", err))
 				}
 			}
 			// Not gated on --no-silence: that flag says "do not create
 			// silences or notify", and the silences being expired here were
 			// created by the command that opened the window, not this one.
 			if err := undoSilence(ctx, e); err != nil {
-				errs = append(errs, fmt.Sprintf("silence: %v", err))
+				errs = append(errs, fmt.Errorf("silence: %w", err))
 			}
-			if len(errs) > 0 {
-				return fmt.Errorf("%s", strings.Join(errs, "; "))
-			}
-			return nil
+			return joinErrors(errs)
 		},
 	}
 }
@@ -860,6 +848,31 @@ func Settle(ctx context.Context, e *Env, timeout time.Duration) error {
 }
 
 // ---------- helpers ----------
+
+// joinedError is what a step returns when it kept going past failures and has
+// several to report. It reads as the messages joined with "; " on one line,
+// which is what state.json and the terminal have always shown; errors.Join
+// would put each on its own line.
+type joinedError []error
+
+func (j joinedError) Error() string {
+	msgs := make([]string, len(j))
+	for i, err := range j {
+		msgs[i] = err.Error()
+	}
+	return strings.Join(msgs, "; ")
+}
+
+func (j joinedError) Unwrap() []error { return j }
+
+// joinErrors returns nil for no errors, so a step can collect as it goes and
+// return the result unconditionally.
+func joinErrors(errs []error) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	return joinedError(errs)
+}
 
 func dataOf(e *Env, step, key string) any {
 	st := e.State.Step(step)
