@@ -52,8 +52,6 @@ type Logger struct {
 	term     io.Writer
 	minLevel Level
 	step     string
-	// DryRun only affects the "would" wording helpers; it does not suppress logging.
-	DryRun bool
 }
 
 // New opens a transcript file under dir. A failure to open the file is not
@@ -143,23 +141,6 @@ func (l *Logger) Step(name, desc string) {
 	}
 	fmt.Fprintf(l.term, "\n==> %s: %s\n", name, desc)
 	l.mu.Unlock()
-}
-
-// Result prints a terminal-only pass/fail marker; the transcript already has
-// the detail lines that led to it.
-func (l *Logger) Result(ok bool, name, detail string) {
-	mark := "FAIL"
-	if ok {
-		mark = "ok"
-	}
-	l.write(levelFor(ok), fmt.Sprintf("[%s] %-28s %s", mark, name, detail))
-}
-
-func levelFor(ok bool) Level {
-	if ok {
-		return LevelInfo
-	}
-	return LevelError
 }
 
 // API records one PVE API call. Kept on its own line format so that

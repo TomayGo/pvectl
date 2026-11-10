@@ -129,7 +129,6 @@ func setup() (*config.Config, *plog.Logger, error) {
 		return nil, nil, errors.New(strings.TrimRight(b.String(), "\n"))
 	}
 	lg := plog.New(g.logDir, g.verbose)
-	lg.DryRun = g.opts.DryRun
 	if cfg.Cluster.Rolling.SettleTimeout.D() > 0 && g.opts.TimeoutSettle == plan.DefaultOptions().TimeoutSettle {
 		g.opts.TimeoutSettle = cfg.Cluster.Rolling.SettleTimeout.D()
 	}
@@ -151,14 +150,6 @@ func newEnv(target string) (*plan.Env, *plog.Logger, error) {
 		lg.Debugf("transcript: %s", lg.Path)
 	}
 	return e, lg, nil
-}
-
-// nodeArg validates the node name against the config before anything runs.
-func nodeArg(cmd *cobra.Command, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("expected exactly one node name")
-	}
-	return nil
 }
 
 func banner(e *plan.Env, what string) {
