@@ -3,6 +3,7 @@ package plan
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -121,6 +122,25 @@ func stepCephFlags(flags []string) Step {
 		},
 		Undo: func(ctx context.Context, e *Env) error { return undoCephFlags(ctx, e) },
 	}
+}
+
+// SplitCephFlags sorts the ceph flags that are set into the ones the
+// ceph-flags step sets (cluster.ceph_flags) and everything else. Only the
+// first kind can be a leftover of a node maintenance; anything else was set by
+// an operator or by another tool, for a reason pvectl cannot see.
+func SplitCephFlags(managed []string, flags map[string]bool) (ours, others []string) {
+	for name, on := range flags {
+		switch {
+		case !on:
+		case contains(managed, name):
+			ours = append(ours, name)
+		default:
+			others = append(others, name)
+		}
+	}
+	sort.Strings(ours)
+	sort.Strings(others)
+	return ours, others
 }
 
 // setCephFlags records which flags were already on before we touched them, so

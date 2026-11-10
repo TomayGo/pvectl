@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/TomayGo/pvectl/internal/alert"
+	plog "github.com/TomayGo/pvectl/internal/log"
 	"github.com/TomayGo/pvectl/internal/plan"
 	"github.com/TomayGo/pvectl/internal/state"
 )
@@ -339,6 +340,48 @@ func newDoctorCmd() *cobra.Command {
 	return c
 }
 
+// cephFlagSetter is the one PVE call doctor needs to clear a flag.
+type cephFlagSetter interface {
+	SetCephFlag(ctx context.Context, flag string, on bool) error
+}
+
+// doctorCephFlags reports the ceph flags that are set and, with fix, clears
+// the ones a node maintenance sets (cluster.ceph_flags). It returns how many
+// issues it found that --fix addresses.
+//
+// Any other flag is reported and left alone. doctor cannot tell a leftover
+// from a decision: nodown or pause set by hand, or by `shutdown cluster`
+// whose `start cluster` has not run yet, is there on purpose, and clearing it
+// lets Ceph start marking OSDs down or serving IO in the middle of someone
+// else's work.
+func doctorCephFlags(ctx context.Context, lg *plog.Logger, pc cephFlagSetter, managed []string, flags map[string]bool, fix bool) int {
+	ours, others := plan.SplitCephFlags(managed, flags)
+	if len(ours) == 0 && len(others) == 0 {
+		lg.Plain("[ok]   ceph flags   : none set")
+		return 0
+	}
+	found := 0
+	if len(ours) > 0 {
+		found++
+		lg.Plain("[warn] ceph flags   : %s still set", strings.Join(ours, " "))
+		if fix {
+			for _, f := range ours {
+				if err := pc.SetCephFlag(ctx, f, false); err != nil {
+					lg.Plain("       -> clearing %s failed: %v", f, err)
+					continue
+				}
+				lg.Plain("       -> cleared %s", f)
+			}
+		}
+	}
+	if len(others) > 0 {
+		lg.Plain("[warn] ceph flags   : %s set, but not by a node maintenance (cluster.ceph_flags is %s); leaving %s alone",
+			strings.Join(others, " "), strings.Join(managed, " "), map[bool]string{true: "it", false: "them"}[len(others) == 1])
+		lg.Plain("       `pvectl start cluster` lifts a cluster freeze; `ceph osd unset <flag>` clears one by hand")
+	}
+	return found
+}
+
 func runDoctor(ctx context.Context, e *plan.Env, fix bool) error {
 	lg := e.Log
 	lg.Plain("pvectl doctor (from %s)%s", e.Self, map[bool]string{true: " --fix", false: ""}[fix])
@@ -372,28 +415,7 @@ func runDoctor(ctx context.Context, e *plan.Env, fix bool) error {
 	if flags, err := e.PVE.CephFlags(ctx); err != nil {
 		lg.Plain("[fail] ceph flags   : %v", err)
 	} else {
-		var set []string
-		for n, on := range flags {
-			if on {
-				set = append(set, n)
-			}
-		}
-		sort.Strings(set)
-		if len(set) > 0 {
-			found++
-			lg.Plain("[warn] ceph flags   : %s still set", strings.Join(set, " "))
-			if fix {
-				for _, f := range set {
-					if err := e.PVE.SetCephFlag(ctx, f, false); err != nil {
-						lg.Plain("       -> clearing %s failed: %v", f, err)
-						continue
-					}
-					lg.Plain("       -> cleared %s", f)
-				}
-			}
-		} else {
-			lg.Plain("[ok]   ceph flags   : none set")
-		}
+		found += doctorCephFlags(ctx, lg, e.PVE, e.Cfg.Cluster.CephFlags, flags, fix)
 	}
 
 	// cordoned kubernetes nodes

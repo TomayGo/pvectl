@@ -81,6 +81,10 @@ func New(dir string, verbose bool) *Logger {
 // Discard returns a logger that writes nowhere. For tests.
 func Discard() *Logger { return &Logger{term: io.Discard, minLevel: LevelError} }
 
+// To returns a logger that prints to w and keeps no transcript. For tests
+// that read back what a command reported.
+func To(w io.Writer) *Logger { return &Logger{term: w, minLevel: LevelInfo} }
+
 func (l *Logger) Close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
