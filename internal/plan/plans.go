@@ -76,8 +76,7 @@ func StepsFor(command string, e *Env) ([]Step, error) {
 // reads the uptime that the power step recorded, so the two must agree on the
 // step name -- building them from one string is what guarantees that.
 func hostPowerAndWait(command string) []Step {
-	name := "host-" + command
-	return []Step{stepHostPower(command), stepWaitDown(name)}
+	return []Step{stepHostPower(command), stepWaitDown(hostPowerStep(command))}
 }
 
 // KeepsLockOnSuccess reports whether the node is still under maintenance when
