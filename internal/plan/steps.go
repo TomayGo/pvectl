@@ -15,7 +15,7 @@ import (
 
 func stepLock() Step {
 	return Step{
-		Name: "lock",
+		Name: lockStep,
 		Desc: "hold the cluster-wide maintenance lock",
 		Do: func(ctx context.Context, e *Env) error {
 			if e.Lock == nil {
@@ -34,7 +34,7 @@ func stepLock() Step {
 
 func stepPreflight(forShutdown bool) Step {
 	return Step{
-		Name: "preflight",
+		Name: preflightStep,
 		Desc: "read-only safety checks",
 		Do: func(ctx context.Context, e *Env) error {
 			r := Preflight(ctx, e, forShutdown)
@@ -55,7 +55,7 @@ func stepPreflight(forShutdown bool) Step {
 
 func stepSilence() Step {
 	return Step{
-		Name: "silence",
+		Name: silenceStep,
 		Desc: "silence Alertmanager for the node and announce on Discord",
 		Skip: func(ctx context.Context, e *Env) (bool, string, error) {
 			if e.Opts.NoSilence {
@@ -74,7 +74,7 @@ func stepSilence() Step {
 			// An abandoned earlier attempt may have left silences recorded
 			// here; overwriting would strand them until they expire on their
 			// own, muting the node long after it is healthy.
-			e.State.SetData("silence", "ids", append(toStrings(dataOf(e, "silence", "ids")), ids...))
+			e.State.SetData(silenceStep, "ids", append(toStrings(dataOf(e, silenceStep, "ids")), ids...))
 			// A failed Discord post must not stop a maintenance that is
 			// otherwise fine to run.
 			if err := e.Alert.Notify(ctx, "firing", "PvectlMaintenance",
@@ -89,7 +89,7 @@ func stepSilence() Step {
 }
 
 func undoSilence(ctx context.Context, e *Env) error {
-	st := e.State.Step("silence")
+	st := e.State.Step(silenceStep)
 	var errs []string
 	if st != nil && st.Data != nil {
 		if raw, ok := st.Data["ids"]; ok {
@@ -117,7 +117,7 @@ func undoSilence(ctx context.Context, e *Env) error {
 
 func stepCephFlags(flags []string) Step {
 	return Step{
-		Name: "ceph-flags",
+		Name: cephFlagsStep,
 		Desc: "set ceph " + strings.Join(flags, ", "),
 		Do: func(ctx context.Context, e *Env) error {
 			return setCephFlags(ctx, e, e.Cfg.Cluster.CephFlags)
@@ -136,7 +136,7 @@ func setCephFlags(ctx context.Context, e *Env, flags []string) error {
 	// Seed from anything an earlier attempt at this same maintenance recorded.
 	// Without this, re-running a command after a failure sees its own flags as
 	// pre-existing, disowns them, and restore leaves noout set forever.
-	ours := toStrings(dataOf(e, "ceph-flags", "set_by_us"))
+	ours := toStrings(dataOf(e, cephFlagsStep, "set_by_us"))
 	owned := map[string]bool{}
 	for _, f := range ours {
 		owned[f] = true
@@ -161,12 +161,12 @@ func setCephFlags(ctx context.Context, e *Env, flags []string) error {
 			ours = append(ours, f)
 		}
 	}
-	e.State.SetData("ceph-flags", "set_by_us", ours)
+	e.State.SetData(cephFlagsStep, "set_by_us", ours)
 	return nil
 }
 
 func undoCephFlags(ctx context.Context, e *Env) error {
-	st := e.State.Step("ceph-flags")
+	st := e.State.Step(cephFlagsStep)
 	if st == nil || st.Data == nil {
 		return nil
 	}
@@ -187,10 +187,6 @@ func undoCephFlags(ctx context.Context, e *Env) error {
 }
 
 // ---------- 5. HA evacuation ----------
-
-// haStep names the HA evacuation step. restore and doctor read its recorded
-// ownership of the node's HA maintenance.
-const haStep = "ha-evacuate"
 
 // haOwnedKey records that this maintenance window, not someone else, put the
 // node into HA maintenance -- the same split as ceph-flags' set_by_us.
@@ -398,7 +394,7 @@ func contains(list []string, v string) bool {
 
 func stepK8sDrain() Step {
 	return Step{
-		Name: "k8s-drain",
+		Name: drainStep,
 		Desc: "cordon and drain the Talos node",
 		Do: func(ctx context.Context, e *Env) error {
 			name := e.Node.Talos.Name
@@ -419,7 +415,7 @@ func undoDrain(ctx context.Context, e *Env) error {
 
 func stepTalosStop() Step {
 	return Step{
-		Name: "talos-stop",
+		Name: talosStopStep,
 		Desc: "shut down the Talos control-plane VM",
 		Skip: func(ctx context.Context, e *Env) (bool, string, error) {
 			if e.Opts.DryRun {
@@ -459,7 +455,7 @@ func stepTalosStop() Step {
 
 func stepGuestStop() Step {
 	return Step{
-		Name: "guest-stop",
+		Name: guestStopStep,
 		Desc: "shut down passthrough guests that cannot migrate",
 		Skip: func(ctx context.Context, e *Env) (bool, string, error) {
 			if len(e.Node.StopGuests) == 0 {
@@ -469,7 +465,7 @@ func stepGuestStop() Step {
 		},
 		Do: func(ctx context.Context, e *Env) error { return stopGuests(ctx, e) },
 		Undo: func(ctx context.Context, e *Env) error {
-			return startGuests(ctx, e, toInts(dataOf(e, "guest-stop", "stopped")))
+			return startGuests(ctx, e, toInts(dataOf(e, guestStopStep, "stopped")))
 		},
 	}
 }
@@ -521,7 +517,7 @@ func stopGuests(ctx context.Context, e *Env) error {
 		e.Log.Infof("guest %d %s stopped", g.ID, lr.Name)
 		stopped = append(stopped, g.ID)
 	}
-	e.State.SetData("guest-stop", "stopped", stopped)
+	e.State.SetData(guestStopStep, "stopped", stopped)
 	return nil
 }
 
@@ -566,7 +562,7 @@ func stepHostPower(command string) Step {
 		desc = "reboot the host"
 	}
 	return Step{
-		Name:         "host-" + command,
+		Name:         hostPowerStep(command),
 		Desc:         desc,
 		Irreversible: true,
 		Do: func(ctx context.Context, e *Env) error {
@@ -574,7 +570,7 @@ func stepHostPower(command string) Step {
 			// polls, a lower uptime afterwards is the only remaining proof
 			// that it actually went down.
 			if ns, err := e.PVE.NodeStatus(ctx, e.Target); err == nil {
-				e.State.SetData("host-"+command, "uptime_before", ns.Uptime)
+				e.State.SetData(hostPowerStep(command), "uptime_before", ns.Uptime)
 			} else {
 				e.Log.Debugf("could not record %s uptime before %s: %v", e.Target, command, err)
 			}
@@ -590,7 +586,7 @@ func stepHostPower(command string) Step {
 
 func stepWaitDown(powerStep string) Step {
 	return Step{
-		Name: "wait-down",
+		Name: waitDownStep,
 		Desc: "wait for the host to leave the cluster",
 		Do: func(ctx context.Context, e *Env) error {
 			if e.Opts.DryRun {
@@ -653,7 +649,7 @@ func stepWaitDown(powerStep string) Step {
 
 func stepWake() Step {
 	return Step{
-		Name: "wake",
+		Name: wakeStep,
 		Desc: "send Wake-on-LAN to both bond slaves",
 		Skip: func(ctx context.Context, e *Env) (bool, string, error) {
 			if e.Opts.DryRun {
@@ -674,7 +670,7 @@ func stepWake() Step {
 
 func stepWaitUp() Step {
 	return Step{
-		Name: "wait-up",
+		Name: waitUpStep,
 		Desc: "wait for corosync, Ceph OSD, Talos and kubelet to come back",
 		Do: func(ctx context.Context, e *Env) error {
 			if e.Opts.DryRun {
@@ -769,14 +765,14 @@ func restoreHAMaintenance(ctx context.Context, e *Env) error {
 // on the success path, after the node is back.
 func stepRestore() Step {
 	return Step{
-		Name: "restore",
+		Name: restoreStep,
 		Desc: "uncordon, clear ceph flags, end HA maintenance, start guests, lift the silence",
 		Do: func(ctx context.Context, e *Env) error {
 			var errs []string
 			if err := undoDrain(ctx, e); err != nil {
 				errs = append(errs, fmt.Sprintf("uncordon: %v", err))
 			}
-			if st := e.State.Step("ceph-flags"); st == nil || st.Data["set_by_us"] == nil {
+			if st := e.State.Step(cephFlagsStep); st == nil || st.Data["set_by_us"] == nil {
 				e.Log.Warnf("no record of which ceph flags this maintenance set; leaving them alone -- check `pvectl status` and clear with `pvectl doctor --fix` if needed")
 			}
 			if err := undoCephFlags(ctx, e); err != nil {
@@ -809,7 +805,7 @@ func stepRestore() Step {
 
 func stepVerify() Step {
 	return Step{
-		Name: "verify",
+		Name: verifyStep,
 		Desc: "confirm the cluster is fully healthy again",
 		Do: func(ctx context.Context, e *Env) error {
 			if e.Opts.DryRun {
@@ -930,7 +926,7 @@ func (e *Env) impactSummary() string {
 	parts = append(parts, fmt.Sprintf("kubernetes loses %s", e.Node.Talos.Name))
 	if e.State != nil && e.State.Command == CmdUpgrade {
 		what := "host packages upgraded"
-		if v := dataString(e, "talos-upgrade", "requested_version") + dataString(e, "talos-upgrade", "requested_image"); v != "" {
+		if v := dataString(e, talosUpgradeStep, "requested_version") + dataString(e, talosUpgradeStep, "requested_image"); v != "" {
 			what += ", Talos -> " + v
 		}
 		parts = append(parts, what)

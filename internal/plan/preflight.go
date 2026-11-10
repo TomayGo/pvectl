@@ -64,25 +64,25 @@ func (r *Report) Print(e *Env) {
 // CheckNames is the full list of --skip-check values, also used by the CLI to
 // reject a typo instead of silently skipping nothing.
 var CheckNames = []string{
-	"cluster-lock",
-	"quorum",
-	"nodes-online",
-	"self-host",
-	"ceph-health",
-	"ceph-pgs",
-	"ceph-flags",
-	"k8s-ready",
-	"k8s-drain",
-	"etcd",
-	"ha-capacity",
-	"ha-affinity",
-	"tasks",
-	"guests",
-	"ssh-path",
-	"ephemeral-data",
+	clusterLockCheck,
+	quorumCheck,
+	nodesOnlineCheck,
+	selfHostCheck,
+	cephHealthCheck,
+	cephPGsCheck,
+	cephFlagsCheck,
+	k8sReadyCheck,
+	k8sDrainCheck,
+	etcdCheck,
+	haCapacityCheck,
+	haAffinityCheck,
+	tasksCheck,
+	guestsCheck,
+	sshPathCheck,
+	ephemeralDataCheck,
 	// upgrade only
-	"apt-plan",
-	"talos-target",
+	aptPlanCheck,
+	talosTargetCheck,
 }
 
 func ValidCheckName(n string) bool {
@@ -119,29 +119,29 @@ func Preflight(ctx context.Context, e *Env, forShutdown bool) *Report {
 		fn()
 	}
 
-	run("cluster-lock", func() { checkLock(e, r) })
-	run("quorum", func() { checkQuorum(ctx, e, r) })
-	run("nodes-online", func() { checkNodesOnline(ctx, e, r) })
+	run(clusterLockCheck, func() { checkLock(e, r) })
+	run(quorumCheck, func() { checkQuorum(ctx, e, r) })
+	run(nodesOnlineCheck, func() { checkNodesOnline(ctx, e, r) })
 	if forShutdown {
-		run("self-host", func() { checkSelfHost(e, r) })
+		run(selfHostCheck, func() { checkSelfHost(e, r) })
 	}
-	run("ceph-health", func() { checkCephHealth(ctx, e, r) })
-	run("ceph-pgs", func() { checkCephPGs(ctx, e, r) })
-	run("ceph-flags", func() { checkCephFlags(ctx, e, r) })
-	run("k8s-ready", func() { checkK8sReady(ctx, e, r) })
-	run("etcd", func() { checkEtcd(ctx, e, r) })
+	run(cephHealthCheck, func() { checkCephHealth(ctx, e, r) })
+	run(cephPGsCheck, func() { checkCephPGs(ctx, e, r) })
+	run(cephFlagsCheck, func() { checkCephFlags(ctx, e, r) })
+	run(k8sReadyCheck, func() { checkK8sReady(ctx, e, r) })
+	run(etcdCheck, func() { checkEtcd(ctx, e, r) })
 	if e.Target != "" {
-		run("k8s-drain", func() { checkDrain(ctx, e, r) })
-		run("ha-capacity", func() { checkHACapacity(ctx, e, r) })
-		run("ha-affinity", func() { checkHAAffinity(ctx, e, r) })
-		run("tasks", func() { checkTasks(ctx, e, r) })
-		run("ephemeral-data", func() { checkEphemeralData(ctx, e, r) })
+		run(k8sDrainCheck, func() { checkDrain(ctx, e, r) })
+		run(haCapacityCheck, func() { checkHACapacity(ctx, e, r) })
+		run(haAffinityCheck, func() { checkHAAffinity(ctx, e, r) })
+		run(tasksCheck, func() { checkTasks(ctx, e, r) })
+		run(ephemeralDataCheck, func() { checkEphemeralData(ctx, e, r) })
 		if forShutdown {
 			// Both of these are about the host disappearing. maint enter
 			// leaves the guests running and the machine powered, so reporting
 			// "will stop VM 103 -- the Wi-Fi drops" there would be false.
-			run("guests", func() { checkGuests(ctx, e, r) })
-			run("ssh-path", func() { checkSSHPath(e, r) })
+			run(guestsCheck, func() { checkGuests(ctx, e, r) })
+			run(sshPathCheck, func() { checkSSHPath(e, r) })
 		}
 	}
 	return r
@@ -157,39 +157,39 @@ func Preflight(ctx context.Context, e *Env, forShutdown bool) *Report {
 func checkLock(e *Env, r *Report) {
 	held, err := state.Peek(e.StateDir)
 	if err != nil {
-		r.add("cluster-lock", Fail, "cannot read the cluster lock: %v", err)
+		r.add(clusterLockCheck, Fail, "cannot read the cluster lock: %v", err)
 		return
 	}
 	if held == nil {
 		if e.Lock != nil && e.Opts.DryRun {
-			r.add("cluster-lock", Pass, "free (this dry run did not take it)")
+			r.add(clusterLockCheck, Pass, "free (this dry run did not take it)")
 			return
 		}
-		r.add("cluster-lock", Pass, "free")
+		r.add(clusterLockCheck, Pass, "free")
 		return
 	}
 	if e.Lock != nil && held.Target == e.Target {
-		r.add("cluster-lock", Pass, "held by this run (%s %s)", held.Command, held.Target)
+		r.add(clusterLockCheck, Pass, "held by this run (%s %s)", held.Command, held.Target)
 		return
 	}
-	r.add("cluster-lock", Fail, "held: %s", held)
+	r.add(clusterLockCheck, Fail, "held: %s", held)
 }
 
 func checkQuorum(ctx context.Context, e *Env, r *Report) {
 	st, err := e.clusterStatus(ctx)
 	if err != nil {
-		r.add("quorum", Fail, "cannot read cluster status: %v", err)
+		r.add(quorumCheck, Fail, "cannot read cluster status: %v", err)
 		return
 	}
 	total := len(st.Nodes)
 	switch {
 	case !st.Quorate:
-		r.add("quorum", Fail, "cluster is NOT quorate (%d nodes known)", total)
+		r.add(quorumCheck, Fail, "cluster is NOT quorate (%d nodes known)", total)
 	case len(st.Online) < total:
-		r.add("quorum", Fail, "quorate but only %d/%d nodes online (offline: %s)",
+		r.add(quorumCheck, Fail, "quorate but only %d/%d nodes online (offline: %s)",
 			len(st.Online), total, strings.Join(st.Offline, ", "))
 	default:
-		r.add("quorum", Pass, "quorate, %d/%d nodes online", len(st.Online), total)
+		r.add(quorumCheck, Pass, "quorate, %d/%d nodes online", len(st.Online), total)
 	}
 }
 
@@ -198,7 +198,7 @@ func checkQuorum(ctx context.Context, e *Env, r *Report) {
 func checkNodesOnline(ctx context.Context, e *Env, r *Report) {
 	st, err := e.clusterStatus(ctx)
 	if err != nil {
-		r.add("nodes-online", Fail, "cannot read cluster status: %v", err)
+		r.add(nodesOnlineCheck, Fail, "cannot read cluster status: %v", err)
 		return
 	}
 	var down []string
@@ -209,38 +209,38 @@ func checkNodesOnline(ctx context.Context, e *Env, r *Report) {
 	}
 	sort.Strings(down)
 	if len(down) > 0 {
-		r.add("nodes-online", Fail, "another node is already down: %s -- stopping a second one loses quorum and Ceph min_size", strings.Join(down, ", "))
+		r.add(nodesOnlineCheck, Fail, "another node is already down: %s -- stopping a second one loses quorum and Ceph min_size", strings.Join(down, ", "))
 		return
 	}
-	r.add("nodes-online", Pass, "every other node is online")
+	r.add(nodesOnlineCheck, Pass, "every other node is online")
 }
 
 // checkSelfHost refuses to drive a node's shutdown from that same node: the
 // process would die at host-poweroff, before the restore steps ever run.
 func checkSelfHost(e *Env, r *Report) {
 	if e.Self == e.Target {
-		r.add("self-host", Fail, "pvectl is running on %s, the node it would stop; run it from %s instead",
+		r.add(selfHostCheck, Fail, "pvectl is running on %s, the node it would stop; run it from %s instead",
 			e.Target, strings.Join(e.OtherNodes(), " or "))
 		return
 	}
-	r.add("self-host", Pass, "running on %s, target is %s", e.Self, e.Target)
+	r.add(selfHostCheck, Pass, "running on %s, target is %s", e.Self, e.Target)
 }
 
 func checkCephHealth(ctx context.Context, e *Env, r *Report) {
 	cs, err := e.cephStatus(ctx)
 	if err != nil {
-		r.add("ceph-health", Fail, "cannot read ceph status: %v", err)
+		r.add(cephHealthCheck, Fail, "cannot read ceph status: %v", err)
 		return
 	}
 	ok, ignored := cs.HealthGate(e.Cfg.Cluster.CephIgnoreHealth)
 	switch {
 	case !ok:
-		r.add("ceph-health", Fail, "%s", cs.HealthSummary())
+		r.add(cephHealthCheck, Fail, "%s", cs.HealthSummary())
 	case len(ignored) > 0:
-		r.add("ceph-health", Warn, "%s, but only for checks that do not affect availability (ceph_ignore_health): %s; %d/%d OSDs up and in",
+		r.add(cephHealthCheck, Warn, "%s, but only for checks that do not affect availability (ceph_ignore_health): %s; %d/%d OSDs up and in",
 			cs.Health.Status, strings.Join(ignored, ", "), cs.OSDMap.NumUpOSDs, cs.OSDMap.NumOSDs)
 	default:
-		r.add("ceph-health", Pass, "HEALTH_OK, %d/%d OSDs up and in",
+		r.add(cephHealthCheck, Pass, "HEALTH_OK, %d/%d OSDs up and in",
 			cs.OSDMap.NumUpOSDs, cs.OSDMap.NumOSDs)
 	}
 }
@@ -248,20 +248,20 @@ func checkCephHealth(ctx context.Context, e *Env, r *Report) {
 func checkCephPGs(ctx context.Context, e *Env, r *Report) {
 	cs, err := e.cephStatus(ctx)
 	if err != nil {
-		r.add("ceph-pgs", Fail, "cannot read ceph status: %v", err)
+		r.add(cephPGsCheck, Fail, "cannot read ceph status: %v", err)
 		return
 	}
 	ok, detail := cs.AllPGsActiveClean()
 	if !ok {
-		r.add("ceph-pgs", Fail, "%s", detail)
+		r.add(cephPGsCheck, Fail, "%s", detail)
 		return
 	}
 	if cs.PGMap.DegradedObjects > 0 || cs.PGMap.MisplacedObjects > 0 {
-		r.add("ceph-pgs", Fail, "%d degraded / %d misplaced objects still moving",
+		r.add(cephPGsCheck, Fail, "%d degraded / %d misplaced objects still moving",
 			cs.PGMap.DegradedObjects, cs.PGMap.MisplacedObjects)
 		return
 	}
-	r.add("ceph-pgs", Pass, "%s", detail)
+	r.add(cephPGsCheck, Pass, "%s", detail)
 }
 
 // checkCephFlags catches the classic leftover: a previous maintenance that
@@ -269,7 +269,7 @@ func checkCephPGs(ctx context.Context, e *Env, r *Report) {
 func checkCephFlags(ctx context.Context, e *Env, r *Report) {
 	flags, err := e.PVEAll.CephFlags(ctx)
 	if err != nil {
-		r.add("ceph-flags", Fail, "cannot read ceph flags: %v", err)
+		r.add(cephFlagsCheck, Fail, "cannot read ceph flags: %v", err)
 		return
 	}
 	var set []string
@@ -280,36 +280,36 @@ func checkCephFlags(ctx context.Context, e *Env, r *Report) {
 	}
 	sort.Strings(set)
 	if len(set) > 0 {
-		r.add("ceph-flags", Fail, "flags left set from an earlier run: %s (clear with: pvectl doctor --fix)", strings.Join(set, ", "))
+		r.add(cephFlagsCheck, Fail, "flags left set from an earlier run: %s (clear with: pvectl doctor --fix)", strings.Join(set, ", "))
 		return
 	}
-	r.add("ceph-flags", Pass, "no flags set")
+	r.add(cephFlagsCheck, Pass, "no flags set")
 }
 
 func checkK8sReady(ctx context.Context, e *Env, r *Report) {
 	ok, bad, err := e.K8s.AllReady(ctx)
 	if err != nil {
-		r.add("k8s-ready", Fail, "cannot list nodes: %v", err)
+		r.add(k8sReadyCheck, Fail, "cannot list nodes: %v", err)
 		return
 	}
 	if !ok {
-		r.add("k8s-ready", Fail, "not all nodes ready and schedulable: %s", strings.Join(bad, ", "))
+		r.add(k8sReadyCheck, Fail, "not all nodes ready and schedulable: %s", strings.Join(bad, ", "))
 		return
 	}
 	nodes, _ := e.K8s.Nodes(ctx)
-	r.add("k8s-ready", Pass, "%d/%d nodes Ready and schedulable", len(nodes), len(nodes))
+	r.add(k8sReadyCheck, Pass, "%d/%d nodes Ready and schedulable", len(nodes), len(nodes))
 }
 
 func checkDrain(ctx context.Context, e *Env, r *Report) {
 	prev, err := e.K8s.DrainPreview(ctx, e.Node.Talos.Name, e.Opts.TimeoutDrain)
 	if err != nil {
-		r.add("k8s-drain", Fail, "drain preview failed: %v", err)
+		r.add(k8sDrainCheck, Fail, "drain preview failed: %v", err)
 		return
 	}
 	if len(prev.Refusals) > 0 {
 		// These are the errors RunNodeDrain itself fails on, so failing here
 		// stops the maintenance before it has set flags and cordoned anything.
-		r.add("k8s-drain", Fail, "drain would refuse to run: %s", strings.Join(prev.Refusals, "; "))
+		r.add(k8sDrainCheck, Fail, "drain would refuse to run: %s", strings.Join(prev.Refusals, "; "))
 		return
 	}
 	if len(prev.Blocked) > 0 {
@@ -317,7 +317,7 @@ func checkDrain(ctx context.Context, e *Env, r *Report) {
 		for _, p := range prev.Blocked {
 			b = append(b, p.String()+" ("+p.Reason+")")
 		}
-		r.add("k8s-drain", Fail, "a PodDisruptionBudget would block eviction: %s", strings.Join(b, "; "))
+		r.add(k8sDrainCheck, Fail, "a PodDisruptionBudget would block eviction: %s", strings.Join(b, "; "))
 		return
 	}
 	detail := fmt.Sprintf("%d pod(s) would be evicted from %s", len(prev.Evictable), e.Node.Talos.Name)
@@ -325,24 +325,24 @@ func checkDrain(ctx context.Context, e *Env, r *Report) {
 		prev.Warnings = append(prev.Warnings, h.String()+": "+h.Reason)
 	}
 	if len(prev.Warnings) > 0 {
-		r.add("k8s-drain", Warn, "%s; %s", detail, strings.Join(prev.Warnings, "; "))
+		r.add(k8sDrainCheck, Warn, "%s; %s", detail, strings.Join(prev.Warnings, "; "))
 		return
 	}
-	r.add("k8s-drain", Pass, "%s", detail)
+	r.add(k8sDrainCheck, Pass, "%s", detail)
 }
 
 func checkEtcd(ctx context.Context, e *Env, r *Report) {
 	h, err := e.Talos.Etcd(ctx, e.TalosIPs())
 	if err != nil {
-		r.add("etcd", Fail, "etcd check failed: %v", err)
+		r.add(etcdCheck, Fail, "etcd check failed: %v", err)
 		return
 	}
 	expect := len(e.Cfg.Nodes)
 	if !h.OK(expect) {
-		r.add("etcd", Fail, "%s", h.Summary(expect))
+		r.add(etcdCheck, Fail, "%s", h.Summary(expect))
 		return
 	}
-	r.add("etcd", Pass, "%s", h.Summary(expect))
+	r.add(etcdCheck, Pass, "%s", h.Summary(expect))
 }
 
 // checkHACapacity verifies the remaining nodes can actually hold the HA
@@ -351,17 +351,17 @@ func checkEtcd(ctx context.Context, e *Env, r *Report) {
 func checkHACapacity(ctx context.Context, e *Env, r *Report) {
 	ha, err := e.PVEAll.HAStatus(ctx)
 	if err != nil {
-		r.add("ha-capacity", Fail, "cannot read HA status: %v", err)
+		r.add(haCapacityCheck, Fail, "cannot read HA status: %v", err)
 		return
 	}
 	svcs := ha.ServicesOn(e.Target)
 	if len(svcs) == 0 {
-		r.add("ha-capacity", Pass, "no HA resources on %s (master is %s)", e.Target, ha.Master)
+		r.add(haCapacityCheck, Pass, "no HA resources on %s (master is %s)", e.Target, ha.Master)
 		return
 	}
 	res, err := e.PVEAll.Resources(ctx, "vm")
 	if err != nil {
-		r.add("ha-capacity", Fail, "cannot read guest resources: %v", err)
+		r.add(haCapacityCheck, Fail, "cannot read guest resources: %v", err)
 		return
 	}
 	byID := map[string]int64{}
@@ -379,7 +379,7 @@ func checkHACapacity(ctx context.Context, e *Env, r *Report) {
 	for _, other := range e.OtherNodes() {
 		ns, err := e.PVEAll.NodeStatus(ctx, other)
 		if err != nil {
-			r.add("ha-capacity", Warn, "cannot read %s memory: %v", other, err)
+			r.add(haCapacityCheck, Warn, "cannot read %s memory: %v", other, err)
 			return
 		}
 		f := ns.Memory.Total - ns.Memory.Used
@@ -387,11 +387,11 @@ func checkHACapacity(ctx context.Context, e *Env, r *Report) {
 		per = append(per, fmt.Sprintf("%s %s free", other, humanBytes(f)))
 	}
 	if need > free {
-		r.add("ha-capacity", Fail, "%s need %s but only %s free across %s",
+		r.add(haCapacityCheck, Fail, "%s need %s but only %s free across %s",
 			strings.Join(names, ", "), humanBytes(need), humanBytes(free), strings.Join(e.OtherNodes(), "+"))
 		return
 	}
-	r.add("ha-capacity", Pass, "%s need %s; %s", strings.Join(names, ", "), humanBytes(need), strings.Join(per, ", "))
+	r.add(haCapacityCheck, Pass, "%s need %s; %s", strings.Join(names, ", "), humanBytes(need), strings.Join(per, ", "))
 }
 
 // checkHAAffinity predicts where the CRM will put each resource once the node
@@ -402,7 +402,7 @@ func checkHACapacity(ctx context.Context, e *Env, r *Report) {
 func checkHAAffinity(ctx context.Context, e *Env, r *Report) {
 	ms, err := e.PVEAll.HAManagerStatus(ctx)
 	if err != nil {
-		r.add("ha-affinity", Fail, "cannot read HA manager status: %v", err)
+		r.add(haAffinityCheck, Fail, "cannot read HA manager status: %v", err)
 		return
 	}
 	var busy []string
@@ -414,24 +414,24 @@ func checkHAAffinity(ctx context.Context, e *Env, r *Report) {
 	active := ms.ActiveServicesOn(e.Target)
 	if len(active) == 0 {
 		if len(busy) > 0 {
-			r.add("ha-affinity", Warn, "no active HA resources on %s, but %s already in HA maintenance", e.Target, strings.Join(busy, ", "))
+			r.add(haAffinityCheck, Warn, "no active HA resources on %s, but %s already in HA maintenance", e.Target, strings.Join(busy, ", "))
 			return
 		}
-		r.add("ha-affinity", Pass, "no active HA resources on %s", e.Target)
+		r.add(haAffinityCheck, Pass, "no active HA resources on %s", e.Target)
 		return
 	}
 	if ms.Disarmed() {
-		r.add("ha-affinity", Fail, "the HA stack is disarmed: the CRM would ignore the maintenance request")
+		r.add(haAffinityCheck, Fail, "the HA stack is disarmed: the CRM would ignore the maintenance request")
 		return
 	}
 	cs, err := e.clusterStatus(ctx)
 	if err != nil {
-		r.add("ha-affinity", Fail, "cannot read cluster status: %v", err)
+		r.add(haAffinityCheck, Fail, "cannot read cluster status: %v", err)
 		return
 	}
 	rules, err := e.PVEAll.HANodeAffinityRules(ctx)
 	if err != nil {
-		r.add("ha-affinity", Warn, "cannot read HA rules (%v); HA will still place %s by its own rules", err, strings.Join(sids(active), ", "))
+		r.add(haAffinityCheck, Warn, "cannot read HA rules (%v); HA will still place %s by its own rules", err, strings.Join(sids(active), ", "))
 		return
 	}
 	var cluster []string
@@ -462,14 +462,14 @@ func checkHAAffinity(ctx context.Context, e *Env, r *Report) {
 		where = append(where, fmt.Sprintf("%s -> %s (%s)", s.SID, strings.Join(pl.Preferred, "|"), rule))
 	}
 	if len(stuck) > 0 {
-		r.add("ha-affinity", Fail, "HA would keep %s on %s", strings.Join(stuck, ", "), e.Target)
+		r.add(haAffinityCheck, Fail, "HA would keep %s on %s", strings.Join(stuck, ", "), e.Target)
 		return
 	}
 	if len(busy) > 0 {
-		r.add("ha-affinity", Warn, "%s; %s already in HA maintenance", strings.Join(where, ", "), strings.Join(busy, ", "))
+		r.add(haAffinityCheck, Warn, "%s; %s already in HA maintenance", strings.Join(where, ", "), strings.Join(busy, ", "))
 		return
 	}
-	r.add("ha-affinity", Pass, "%s", strings.Join(where, ", "))
+	r.add(haAffinityCheck, Pass, "%s", strings.Join(where, ", "))
 }
 
 func orNone(list []string) string {
@@ -484,7 +484,7 @@ func orNone(list []string) string {
 func checkTasks(ctx context.Context, e *Env, r *Report) {
 	tasks, err := e.PVEAll.RunningTasks(ctx, e.Target)
 	if err != nil {
-		r.add("tasks", Warn, "cannot list running tasks on %s: %v", e.Target, err)
+		r.add(tasksCheck, Warn, "cannot list running tasks on %s: %v", e.Target, err)
 		return
 	}
 	var blocking []string
@@ -495,10 +495,10 @@ func checkTasks(ctx context.Context, e *Env, r *Report) {
 		}
 	}
 	if len(blocking) > 0 {
-		r.add("tasks", Fail, "still running on %s: %s", e.Target, strings.Join(blocking, ", "))
+		r.add(tasksCheck, Fail, "still running on %s: %s", e.Target, strings.Join(blocking, ", "))
 		return
 	}
-	r.add("tasks", Pass, "no backup or replication running on %s", e.Target)
+	r.add(tasksCheck, Pass, "no backup or replication running on %s", e.Target)
 }
 
 // checkGuests reconciles config against reality: a passthrough guest that
@@ -507,7 +507,7 @@ func checkTasks(ctx context.Context, e *Env, r *Report) {
 func checkGuests(ctx context.Context, e *Env, r *Report) {
 	live, err := e.PVEAll.GuestsOn(ctx, e.Target)
 	if err != nil {
-		r.add("guests", Warn, "cannot list guests on %s: %v", e.Target, err)
+		r.add(guestsCheck, Warn, "cannot list guests on %s: %v", e.Target, err)
 		return
 	}
 	configured := map[int]bool{}
@@ -579,15 +579,15 @@ func checkGuests(ctx context.Context, e *Env, r *Report) {
 	}
 	switch {
 	case len(unknown) > 0:
-		r.add("guests", Fail, "%s; passthrough guests missing from the config: %s (run `pvectl config discover`)",
+		r.add(guestsCheck, Fail, "%s; passthrough guests missing from the config: %s (run `pvectl config discover`)",
 			detail, strings.Join(unknown, ", "))
 	case len(orphan) > 0:
-		r.add("guests", Fail, "%s; guest %s has no onboot and is not in start_after_boot -- a reboot would leave it stopped",
+		r.add(guestsCheck, Fail, "%s; guest %s has no onboot and is not in start_after_boot -- a reboot would leave it stopped",
 			detail, strings.Join(orphan, ", "))
 	case len(warns) > 0:
-		r.add("guests", Warn, "%s -- %s", detail, strings.Join(warns, " / "))
+		r.add(guestsCheck, Warn, "%s -- %s", detail, strings.Join(warns, " / "))
 	default:
-		r.add("guests", Pass, "%s", detail)
+		r.add(guestsCheck, Pass, "%s", detail)
 	}
 }
 
@@ -622,28 +622,28 @@ func checkSSHPath(e *Env, r *Report) {
 	from := sshClientIP()
 	if from == "" {
 		if len(netGuests) == 0 {
-			r.add("ssh-path", Pass, "not an SSH session, and %s hosts no network-providing guest", e.Target)
+			r.add(sshPathCheck, Pass, "not an SSH session, and %s hosts no network-providing guest", e.Target)
 			return
 		}
-		r.add("ssh-path", Warn, "%s hosts guest %s which carries the LAN; this session is not over SSH, but anything else on that network will drop",
+		r.add(sshPathCheck, Warn, "%s hosts guest %s which carries the LAN; this session is not over SSH, but anything else on that network will drop",
 			e.Target, strings.Join(netGuests, ", "))
 		return
 	}
 	if from == e.Node.LANIP {
-		r.add("ssh-path", Fail, "this session comes from %s itself; stopping it kills the run mid-plan", e.Target)
+		r.add(sshPathCheck, Fail, "this session comes from %s itself; stopping it kills the run mid-plan", e.Target)
 		return
 	}
 	// A session arriving from another cluster node is on the wired LAN and
 	// survives the AP guest going away.
 	if peer := e.Cfg.NodeByIP(from); peer != "" {
-		r.add("ssh-path", Pass, "session comes from %s over the wired LAN", peer)
+		r.add(sshPathCheck, Pass, "session comes from %s over the wired LAN", peer)
 		return
 	}
 	if len(netGuests) == 0 {
-		r.add("ssh-path", Pass, "no network-providing guest on %s", e.Target)
+		r.add(sshPathCheck, Pass, "no network-providing guest on %s", e.Target)
 		return
 	}
-	r.add("ssh-path", Fail, "%s hosts guest %s which carries the LAN, and this session comes from %s -- it will be cut mid-run; connect from another node, or pass --skip-check ssh-path if you are on wired ethernet",
+	r.add(sshPathCheck, Fail, "%s hosts guest %s which carries the LAN, and this session comes from %s -- it will be cut mid-run; connect from another node, or pass --skip-check ssh-path if you are on wired ethernet",
 		e.Target, strings.Join(netGuests, ", "), from)
 }
 
@@ -677,17 +677,17 @@ func humanBytes(b int64) string {
 func checkEphemeralData(ctx context.Context, e *Env, r *Report) {
 	eph, err := e.K8s.EphemeralPrometheus(ctx)
 	if err != nil {
-		r.add("ephemeral-data", Warn, "cannot list Prometheus resources: %v", err)
+		r.add(ephemeralDataCheck, Warn, "cannot list Prometheus resources: %v", err)
 		return
 	}
 	if len(eph) == 0 {
-		r.add("ephemeral-data", Pass, "every Prometheus keeps its TSDB on a volume")
+		r.add(ephemeralDataCheck, Pass, "every Prometheus keeps its TSDB on a volume")
 		return
 	}
 	msg := fmt.Sprintf("Prometheus without spec.storage (TSDB in emptyDir): %s -- a pod that moves loses its history", strings.Join(eph, ", "))
 	if e.Opts.Rolling {
-		r.add("ephemeral-data", Fail, "%s, and a rolling operation moves every replica: the whole history would be lost", msg)
+		r.add(ephemeralDataCheck, Fail, "%s, and a rolling operation moves every replica: the whole history would be lost", msg)
 		return
 	}
-	r.add("ephemeral-data", Warn, "%s; the other replica keeps it, but not across a rolling operation", msg)
+	r.add(ephemeralDataCheck, Warn, "%s; the other replica keeps it, but not across a rolling operation", msg)
 }

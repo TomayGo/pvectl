@@ -41,10 +41,10 @@ func ValidateUpgradeOptions(o Options) error {
 // `resume` and `abort` -- which never see the original flags -- upgrade to the
 // same release.
 func recordUpgradeRequest(e *Env) {
-	e.State.SetData("talos-upgrade", "requested_version", e.Opts.TalosVersion)
-	e.State.SetData("talos-upgrade", "requested_image", e.Opts.TalosImage)
-	e.State.SetData("talos-upgrade", "image", "")
-	e.State.SetData("talos-upgrade", "version", "")
+	e.State.SetData(talosUpgradeStep, "requested_version", e.Opts.TalosVersion)
+	e.State.SetData(talosUpgradeStep, "requested_image", e.Opts.TalosImage)
+	e.State.SetData(talosUpgradeStep, "image", "")
+	e.State.SetData(talosUpgradeStep, "version", "")
 }
 
 func dataString(e *Env, step, key string) string {
@@ -61,11 +61,11 @@ func dataString(e *Env, step, key string) string {
 //
 // Returns "" when no Talos upgrade was asked for.
 func talosTarget(ctx context.Context, e *Env) (image, version string, err error) {
-	if img := dataString(e, "talos-upgrade", "image"); img != "" {
-		return img, dataString(e, "talos-upgrade", "version"), nil
+	if img := dataString(e, talosUpgradeStep, "image"); img != "" {
+		return img, dataString(e, talosUpgradeStep, "version"), nil
 	}
-	reqVer := dataString(e, "talos-upgrade", "requested_version")
-	reqImg := dataString(e, "talos-upgrade", "requested_image")
+	reqVer := dataString(e, talosUpgradeStep, "requested_version")
+	reqImg := dataString(e, talosUpgradeStep, "requested_image")
 	switch {
 	case reqImg != "":
 		image = reqImg
@@ -80,8 +80,8 @@ func talosTarget(ctx context.Context, e *Env) (image, version string, err error)
 	default:
 		return "", "", nil
 	}
-	e.State.SetData("talos-upgrade", "image", image)
-	e.State.SetData("talos-upgrade", "version", version)
+	e.State.SetData(talosUpgradeStep, "image", image)
+	e.State.SetData(talosUpgradeStep, "version", version)
 	return image, version, nil
 }
 
@@ -147,8 +147,8 @@ func upgradeChecks(ctx context.Context, e *Env, r *Report) {
 		}
 		fn()
 	}
-	run("apt-plan", func() { checkAptPlan(ctx, e, r) })
-	run("talos-target", func() { checkTalosTarget(ctx, e, r) })
+	run(aptPlanCheck, func() { checkAptPlan(ctx, e, r) })
+	run(talosTargetCheck, func() { checkTalosTarget(ctx, e, r) })
 }
 
 // checkAptPlan simulates the upgrade from the host's current package index.
@@ -157,52 +157,52 @@ func upgradeChecks(ctx context.Context, e *Env, r *Report) {
 func checkAptPlan(ctx context.Context, e *Env, r *Report) {
 	p, err := e.Apt.Simulate(ctx, e.aptHost())
 	if err != nil {
-		r.add("apt-plan", Fail, "cannot simulate the upgrade on %s: %v", e.Target, err)
+		r.add(aptPlanCheck, Fail, "cannot simulate the upgrade on %s: %v", e.Target, err)
 		return
 	}
 	if reason := refuseAptPlan(p.Remove, p.MajorBumps()); reason != "" {
-		r.add("apt-plan", Fail, "%s", reason)
+		r.add(aptPlanCheck, Fail, "%s", reason)
 		return
 	}
-	r.add("apt-plan", Pass, "%s (from the current index; refreshed before installing)", p.Summary())
+	r.add(aptPlanCheck, Pass, "%s (from the current index; refreshed before installing)", p.Summary())
 }
 
 func checkTalosTarget(ctx context.Context, e *Env, r *Report) {
 	image, version, err := talosTarget(ctx, e)
 	if err != nil {
-		r.add("talos-target", Fail, "%v", err)
+		r.add(talosTargetCheck, Fail, "%v", err)
 		return
 	}
 	if image == "" {
-		r.add("talos-target", Pass, "no Talos upgrade requested (--talos-version); %s keeps its release", e.Node.Talos.Name)
+		r.add(talosTargetCheck, Pass, "no Talos upgrade requested (--talos-version); %s keeps its release", e.Node.Talos.Name)
 		return
 	}
 	cur, err := e.Talos.Version(ctx, e.Node.Talos.IP)
 	if err != nil {
-		r.add("talos-target", Fail, "cannot read %s's running release: %v", e.Node.Talos.Name, err)
+		r.add(talosTargetCheck, Fail, "cannot read %s's running release: %v", e.Node.Talos.Name, err)
 		return
 	}
 	switch {
 	case version != "" && olderThan(version, cur):
-		r.add("talos-target", Fail, "%s runs %s; %s would be a downgrade", e.Node.Talos.Name, cur, version)
+		r.add(talosTargetCheck, Fail, "%s runs %s; %s would be a downgrade", e.Node.Talos.Name, cur, version)
 		return
 	case version == cur:
-		r.add("talos-target", Pass, "%s already runs %s; nothing to install", e.Node.Talos.Name, cur)
+		r.add(talosTargetCheck, Pass, "%s already runs %s; nothing to install", e.Node.Talos.Name, cur)
 		return
 	case version != "" && skipsMinor(cur, version):
-		r.add("talos-target", Fail, "%s runs %s; %s skips a minor release -- Talos upgrades one minor at a time, "+
+		r.add(talosTargetCheck, Fail, "%s runs %s; %s skips a minor release -- Talos upgrades one minor at a time, "+
 			"go through the intermediate release first", e.Node.Talos.Name, cur, version)
 		return
 	}
 	exists, known, err := talos.ImageExists(ctx, image)
 	switch {
 	case known && !exists:
-		r.add("talos-target", Fail, "%s does not exist in the registry (typo in --talos-version?)", image)
+		r.add(talosTargetCheck, Fail, "%s does not exist in the registry (typo in --talos-version?)", image)
 	case !known:
-		r.add("talos-target", Warn, "%s %s -> %s; could not confirm the image exists (%v), the pull will tell",
+		r.add(talosTargetCheck, Warn, "%s %s -> %s; could not confirm the image exists (%v), the pull will tell",
 			e.Node.Talos.Name, cur, orUnknown(version), err)
 	default:
-		r.add("talos-target", Pass, "%s %s -> %s (%s)", e.Node.Talos.Name, cur, orUnknown(version), image)
+		r.add(talosTargetCheck, Pass, "%s %s -> %s (%s)", e.Node.Talos.Name, cur, orUnknown(version), image)
 	}
 }
 
@@ -237,7 +237,7 @@ func refuseAptPlan(remove []apt.Package, bumps []string) string {
 
 func stepTalosUpgrade() Step {
 	return Step{
-		Name: "talos-upgrade",
+		Name: talosUpgradeStep,
 		Desc: "install the new Talos release into the VM's inactive boot slot (no reboot)",
 		Skip: func(ctx context.Context, e *Env) (bool, string, error) {
 			image, version, err := talosTarget(ctx, e)
@@ -257,7 +257,7 @@ func stepTalosUpgrade() Step {
 			if cur == version {
 				return true, fmt.Sprintf("%s already runs %s", e.Node.Talos.Name, cur), nil
 			}
-			e.State.SetData("talos-upgrade", "from", cur)
+			e.State.SetData(talosUpgradeStep, "from", cur)
 			return false, "", nil
 		},
 		Do: func(ctx context.Context, e *Env) error {
@@ -284,7 +284,7 @@ func stepTalosUpgrade() Step {
 				}
 			}
 			e.Log.Warnf("rolling %s back to %s; the VM reboots", e.Node.Talos.Name,
-				orUnknown(dataString(e, "talos-upgrade", "from")))
+				orUnknown(dataString(e, talosUpgradeStep, "from")))
 			return e.Talos.Rollback(ctx, ip)
 		},
 	}
@@ -294,7 +294,7 @@ func stepTalosUpgrade() Step {
 
 func stepHostUpgrade() Step {
 	return Step{
-		Name: "host-upgrade",
+		Name: hostUpgradeStep,
 		Desc: "apt-get update && full-upgrade on the host",
 		// Packages cannot be un-installed in any meaningful sense. The node
 		// keeps running what it ran until the reboot, so an abort before
@@ -323,7 +323,7 @@ func stepHostUpgrade() Step {
 					e.Log.Infof("  new kernel %s", pkg.Name)
 				}
 			}
-			e.State.SetData("host-upgrade", "summary", p.Summary())
+			e.State.SetData(hostUpgradeStep, "summary", p.Summary())
 			if p.Empty() {
 				e.Log.Infof("nothing to install on %s", e.Target)
 				return nil
@@ -359,7 +359,7 @@ func orNew(v string) string {
 // reports, since Talos has already fallen back to a working release.
 func stepUpgradeCheck() Step {
 	return Step{
-		Name: "upgrade-check",
+		Name: upgradeCheckStep,
 		Desc: "confirm the node booted the new kernel and Talos release",
 		Do: func(ctx context.Context, e *Env) error {
 			if e.Opts.DryRun {
