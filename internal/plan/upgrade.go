@@ -140,15 +140,8 @@ func skipsMinor(from, to string) bool {
 // node is touched. Both are re-checked for real inside the steps; running them
 // here moves the refusal ahead of the silence, the ceph flags and the drain.
 func upgradeChecks(ctx context.Context, e *Env, r *Report) {
-	run := func(name string, fn func()) {
-		if e.skipped(name) {
-			r.add(name, Skipped, "skipped by --skip-check")
-			return
-		}
-		fn()
-	}
-	run(aptPlanCheck, func() { checkAptPlan(ctx, e, r) })
-	run(talosTargetCheck, func() { checkTalosTarget(ctx, e, r) })
+	r.run(e, aptPlanCheck, func() { checkAptPlan(ctx, e, r) })
+	r.run(e, talosTargetCheck, func() { checkTalosTarget(ctx, e, r) })
 }
 
 // checkAptPlan simulates the upgrade from the host's current package index.

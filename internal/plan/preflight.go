@@ -103,6 +103,17 @@ func (e *Env) skipped(name string) bool {
 	return false
 }
 
+// run executes one check unless --skip-check names it. Preflight and the
+// upgrade's additions go through here, so a skipped check is reported the same
+// way wherever it was registered.
+func (r *Report) run(e *Env, name string, fn func()) {
+	if e.skipped(name) {
+		r.add(name, Skipped, "skipped by --skip-check")
+		return
+	}
+	fn()
+}
+
 // Preflight runs every read-only safety check. It never mutates anything, so
 // it is safe to run at any time and is the whole content of `pvectl preflight`.
 //
@@ -111,13 +122,7 @@ func (e *Env) skipped(name string) bool {
 func Preflight(ctx context.Context, e *Env, forShutdown bool) *Report {
 	e.invalidate()
 	r := &Report{}
-	run := func(name string, fn func()) {
-		if e.skipped(name) {
-			r.add(name, Skipped, "skipped by --skip-check")
-			return
-		}
-		fn()
-	}
+	run := func(name string, fn func()) { r.run(e, name, fn) }
 
 	run(clusterLockCheck, func() { checkLock(e, r) })
 	run(quorumCheck, func() { checkQuorum(ctx, e, r) })
