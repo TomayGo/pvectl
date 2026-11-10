@@ -116,7 +116,11 @@ func showStatus(ctx context.Context, e *plan.Env) error {
 		if len(set) == 0 {
 			lg.Plain("ceph flags       : none set")
 		} else {
-			leftovers++
+			// Only the flags a node maintenance sets are a leftover that
+			// `doctor --fix` clears; the hint below must not promise more.
+			if ours, _ := plan.SplitCephFlags(e.Cfg.Cluster.CephFlags, flags); len(ours) > 0 {
+				leftovers++
+			}
 			lg.Plain("ceph flags       : SET %s", strings.Join(set, " "))
 		}
 	}

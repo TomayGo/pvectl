@@ -126,3 +126,26 @@ func plannedCheckNames(forShutdown bool) map[string]bool {
 	}
 	return out
 }
+
+// Every set flag fails the check, but only the ones a node maintenance sets
+// are something `doctor --fix` clears, and the advice has to say which.
+func TestLeftoverCephFlagsAdvice(t *testing.T) {
+	managed := []string{"noout", "norebalance"}
+	if got := leftoverCephFlags(managed, map[string]bool{"noout": false, "pause": false}); got != "" {
+		t.Errorf("no flag set should pass, got %q", got)
+	}
+	got := leftoverCephFlags(managed, map[string]bool{"noout": true, "norebalance": true})
+	if want := "flags left set from an earlier run: noout, norebalance (clear with: pvectl doctor --fix)"; got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+	got = leftoverCephFlags(managed, map[string]bool{"noout": true, "nodown": true})
+	want := "flags left set from an earlier run: noout (clear with: pvectl doctor --fix); " +
+		"flags set outside a node maintenance: nodown (doctor leaves these alone; clear with `ceph osd unset <flag>`)"
+	if got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+	got = leftoverCephFlags(managed, map[string]bool{"pause": true})
+	if strings.Contains(got, "pvectl doctor --fix)") || !strings.Contains(got, "pause") {
+		t.Errorf("a flag doctor will not clear must not be sent to doctor --fix: %q", got)
+	}
+}

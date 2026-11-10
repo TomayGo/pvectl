@@ -277,18 +277,28 @@ func checkCephFlags(ctx context.Context, e *Env, r *Report) {
 		r.add(cephFlagsCheck, Fail, "cannot read ceph flags: %v", err)
 		return
 	}
-	var set []string
-	for name, on := range flags {
-		if on {
-			set = append(set, name)
-		}
-	}
-	sort.Strings(set)
-	if len(set) > 0 {
-		r.add(cephFlagsCheck, Fail, "flags left set from an earlier run: %s (clear with: pvectl doctor --fix)", strings.Join(set, ", "))
+	if detail := leftoverCephFlags(e.Cfg.Cluster.CephFlags, flags); detail != "" {
+		r.add(cephFlagsCheck, Fail, "%s", detail)
 		return
 	}
 	r.add(cephFlagsCheck, Pass, "no flags set")
+}
+
+// leftoverCephFlags words the ceph-flags failure, or returns "" when no flag
+// is set. Every set flag still fails the check; what differs is the advice,
+// because `doctor --fix` only clears the flags a node maintenance sets.
+func leftoverCephFlags(managed []string, flags map[string]bool) string {
+	ours, others := SplitCephFlags(managed, flags)
+	var parts []string
+	if len(ours) > 0 {
+		parts = append(parts, fmt.Sprintf("flags left set from an earlier run: %s (clear with: pvectl doctor --fix)",
+			strings.Join(ours, ", ")))
+	}
+	if len(others) > 0 {
+		parts = append(parts, fmt.Sprintf("flags set outside a node maintenance: %s (doctor leaves these alone; clear with `ceph osd unset <flag>`)",
+			strings.Join(others, ", ")))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func checkK8sReady(ctx context.Context, e *Env, r *Report) {
