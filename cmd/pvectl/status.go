@@ -246,7 +246,9 @@ func newResumeCmd() *cobra.Command {
 				lg.Warnf("%v", err)
 			}
 			if !plan.KeepsLockOnSuccess(st.Command) && !e.Opts.DryRun {
-				_ = state.RemoveState(state.Dir)
+				if err := state.RemoveState(state.Dir); err != nil {
+					lg.Warnf("could not clear state.json: %v", err)
+				}
 			}
 			// A rolling reboot that was rescued with `resume` still has to
 			// close its entry, or the next roll reboots this node again.
