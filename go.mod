@@ -6,6 +6,7 @@ require (
 	github.com/cosi-project/runtime v1.14.1
 	github.com/siderolabs/talos/pkg/machinery v1.13.6
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.9
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.36.2
 	k8s.io/apimachinery v0.36.2
@@ -78,7 +79,6 @@ require (
 	github.com/siderolabs/go-pointer v1.0.1 // indirect
 	github.com/siderolabs/net v0.4.0 // indirect
 	github.com/siderolabs/protoenc v0.2.4 // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xlab/treeprint v1.2.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
