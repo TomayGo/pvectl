@@ -53,10 +53,12 @@ nodes:
     talos: {name: talos-c, ip: 192.0.2.23, vmid: 103}
 `
 
-func writeFixtureConfig(t *testing.T) string {
+func writeFixtureConfig(t *testing.T) string { return writeConfig(t, fixtureYAML) }
+
+func writeConfig(t *testing.T, yaml string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(p, []byte(fixtureYAML), 0o640); err != nil {
+	if err := os.WriteFile(p, []byte(yaml), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	return p
