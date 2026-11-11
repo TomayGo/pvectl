@@ -509,27 +509,16 @@ func stopGuests(ctx context.Context, e *Env) error {
 			e.Log.Warnf("stopping %d %s: %s", g.ID, lr.Name, g.Warn)
 		}
 		kind := lr.Kind()
-		// --force-stop-after names the deadline, so it is the deadline: give
-		// the guest that long to shut down cleanly, then pull the plug. With
-		// the flag unset we wait --timeout-guest and fail rather than force.
-		graceful := e.Opts.TimeoutGuest
-		if e.Opts.ForceStopAfter > 0 {
-			graceful = e.Opts.ForceStopAfter
-		}
-		upid, err := e.PVEAll.GuestShutdown(ctx, e.Target, kind, g.ID, graceful, false)
+		upid, err := e.RequestGuestShutdown(ctx, e.Target, kind, g.ID)
 		if err != nil {
 			return fmt.Errorf("shutdown guest %d: %w", g.ID, err)
 		}
-		if err := e.PVEAll.WaitTask(ctx, e.Target, upid, graceful+30*time.Second); err != nil {
-			if e.Opts.ForceStopAfter <= 0 {
-				return fmt.Errorf("guest %d did not shut down within %s: %w (use --force-stop-after to hard-stop)", g.ID, graceful, err)
+		if err := e.AwaitGuestShutdown(ctx, e.Target, upid); err != nil {
+			if !e.MayForceStop() {
+				return fmt.Errorf("guest %d did not shut down within %s: %w (use --force-stop-after to hard-stop)", g.ID, e.GracefulWindow(), err)
 			}
 			e.Log.Warnf("guest %d did not shut down cleanly (%v); forcing stop", g.ID, err)
-			upid, serr := e.PVEAll.GuestStop(ctx, e.Target, kind, g.ID)
-			if serr != nil {
-				return fmt.Errorf("force stop guest %d: %w", g.ID, serr)
-			}
-			if err := e.PVEAll.WaitTask(ctx, e.Target, upid, 2*time.Minute); err != nil {
+			if err := e.ForceStopGuest(ctx, e.Target, kind, g.ID); err != nil {
 				return fmt.Errorf("force stop guest %d: %w", g.ID, err)
 			}
 		}
@@ -543,12 +532,7 @@ func stopGuests(ctx context.Context, e *Env) error {
 func startGuests(ctx context.Context, e *Env, ids []int) error {
 	var errs []error
 	for _, id := range ids {
-		kind := "qemu"
-		for _, g := range e.Node.StopGuests {
-			if g.ID == id {
-				kind = g.Kind()
-			}
-		}
+		kind := GuestKind(e.Node, id)
 		// PVE rejects a start on a running guest, so without this a restore
 		// that failed halfway can never be resumed: the guests it already
 		// started would fail the retry every time.
@@ -556,12 +540,7 @@ func startGuests(ctx context.Context, e *Env, ids []int) error {
 			e.Log.Infof("guest %d is already running", id)
 			continue
 		}
-		upid, err := e.PVE.GuestStart(ctx, e.Target, kind, id)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("start %d: %w", id, err))
-			continue
-		}
-		if err := e.PVE.WaitTask(ctx, e.Target, upid, 3*time.Minute); err != nil {
+		if err := StartGuest(ctx, e.PVE, e.Target, kind, id); err != nil {
 			errs = append(errs, fmt.Errorf("start %d: %w", id, err))
 			continue
 		}

@@ -420,13 +420,6 @@ func runClusterShutdown(ctx context.Context) error {
 	return nil
 }
 
-func gracefulWindow(e *plan.Env) time.Duration {
-	if e.Opts.ForceStopAfter > 0 {
-		return e.Opts.ForceStopAfter
-	}
-	return e.Opts.TimeoutGuest
-}
-
 // requestGuestShutdown sends the ACPI shutdown and returns its worker UPID.
 // running is false when there was nothing to stop.
 func requestGuestShutdown(ctx context.Context, e *plan.Env, node, kind string, vmid int) (string, bool, error) {
@@ -439,7 +432,7 @@ func requestGuestShutdown(ctx context.Context, e *plan.Env, node, kind string, v
 		e.Log.Infof("guest %d on %s is already %s", vmid, node, st.Status)
 		return "", false, nil
 	}
-	upid, err := e.PVEAll.GuestShutdown(ctx, node, kind, vmid, gracefulWindow(e), false)
+	upid, err := e.RequestGuestShutdown(ctx, node, kind, vmid)
 	if err != nil {
 		return "", false, fmt.Errorf("shutdown guest %d on %s: %w", vmid, node, err)
 	}
@@ -447,17 +440,12 @@ func requestGuestShutdown(ctx context.Context, e *plan.Env, node, kind string, v
 }
 
 func awaitGuestShutdown(ctx context.Context, e *plan.Env, node, kind string, vmid int, upid string) error {
-	graceful := gracefulWindow(e)
-	if err := e.PVEAll.WaitTask(ctx, node, upid, graceful+30*time.Second); err != nil {
-		if e.Opts.ForceStopAfter <= 0 {
-			return fmt.Errorf("guest %d on %s did not shut down within %s: %w (use --force-stop-after)", vmid, node, graceful, err)
+	if err := e.AwaitGuestShutdown(ctx, node, upid); err != nil {
+		if !e.MayForceStop() {
+			return fmt.Errorf("guest %d on %s did not shut down within %s: %w (use --force-stop-after)", vmid, node, e.GracefulWindow(), err)
 		}
 		e.Log.Warnf("guest %d did not stop cleanly (%v); forcing", vmid, err)
-		supid, serr := e.PVEAll.GuestStop(ctx, node, kind, vmid)
-		if serr != nil {
-			return serr
-		}
-		return e.PVEAll.WaitTask(ctx, node, supid, 2*time.Minute)
+		return e.ForceStopGuest(ctx, node, kind, vmid)
 	}
 	e.Log.Infof("guest %d on %s stopped", vmid, node)
 	return nil
@@ -567,18 +555,8 @@ func runClusterStart(ctx context.Context) error {
 	e.Log.Step("start-guests", "start guests that have no onboot flag")
 	for _, n := range e.Cfg.NodeNames() {
 		for _, id := range e.Cfg.Nodes[n].StartAfterBoot {
-			kind := "qemu"
-			for _, gst := range e.Cfg.Nodes[n].StopGuests {
-				if gst.ID == id {
-					kind = gst.Kind()
-				}
-			}
-			upid, err := e.PVEAll.GuestStart(ctx, n, kind, id)
-			if err != nil {
-				e.Log.Warnf("start guest %d on %s: %v", id, n, err)
-				continue
-			}
-			if err := e.PVEAll.WaitTask(ctx, n, upid, 3*time.Minute); err != nil {
+			kind := plan.GuestKind(e.Cfg.Nodes[n], id)
+			if err := plan.StartGuest(ctx, e.PVEAll, n, kind, id); err != nil {
 				e.Log.Warnf("start guest %d on %s: %v", id, n, err)
 				continue
 			}
