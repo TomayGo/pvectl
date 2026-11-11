@@ -22,6 +22,7 @@ import (
 	"github.com/TomayGo/pvectl/internal/config"
 	plog "github.com/TomayGo/pvectl/internal/log"
 	"github.com/TomayGo/pvectl/internal/plan"
+	"github.com/TomayGo/pvectl/internal/remote"
 	"github.com/TomayGo/pvectl/internal/state"
 )
 
@@ -42,6 +43,9 @@ var g = globals{opts: plan.DefaultOptions(), stateDir: state.Dir}
 // buildEnv wires up the clients a command works through. It is plan.NewEnv
 // unless a test replaces it to hand the command an Env made of fakes.
 var buildEnv = plan.NewEnv
+
+// sshRunner is what a rolling hand-off runs ssh through; a test replaces it.
+var sshRunner remote.Runner = remote.Exec{}
 
 func main() {
 	root := newRoot()
