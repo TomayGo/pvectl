@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -98,6 +97,11 @@ type handoffCtx struct {
 	command string // plan.CmdReboot or plan.CmdUpgrade
 	prog    *state.Rolling
 	self    string
+	// stateDir is where rolling.json lives, here and -- pmxcfs being
+	// cluster-wide -- on the peer.
+	stateDir string
+	// run is what executes ssh.
+	run remote.Runner
 }
 
 func (h *handoffCtx) host(node string) remote.Host {
@@ -109,10 +113,10 @@ func (h *handoffCtx) host(node string) remote.Host {
 // without it the peer would start the whole rolling run over.
 func (h *handoffCtx) probe(ctx context.Context, peer, exe string) error {
 	script := remote.Quote(exe, "--version") + "; command -v systemd-run >/dev/null || echo no-systemd-run; " +
-		"test -s " + remote.Quote(filepath.Join(state.Dir, "rolling.json")) + " && echo progress-ok; true"
+		"test -s " + remote.Quote(filepath.Join(h.stateDir, "rolling.json")) + " && echo progress-ok; true"
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ssh", append(remote.Args(h.host(peer)), script)...).CombinedOutput()
+	out, err := h.run.Run(ctx, "ssh", remote.SSHArgs(h.host(peer), script)...)
 	if err != nil {
 		return fmt.Errorf("ssh: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -126,7 +130,7 @@ func (h *handoffCtx) probe(ctx context.Context, peer, exe string) error {
 		return errors.New("systemd-run not found")
 	}
 	if !g.opts.DryRun && !strings.Contains(rest, "progress-ok") {
-		return errors.New("does not see the recorded progress in " + state.Dir)
+		return errors.New("does not see the recorded progress in " + h.stateDir)
 	}
 	return nil
 }
@@ -144,7 +148,7 @@ func (h *handoffCtx) handOff(ctx context.Context) error {
 	}
 	if !g.opts.DryRun {
 		// Warn-only elsewhere; here the peer depends on it.
-		if err := h.prog.Save(state.Dir); err != nil {
+		if err := h.prog.Save(h.stateDir); err != nil {
 			return fmt.Errorf("record progress before hand-off: %w", err)
 		}
 	}
@@ -183,7 +187,7 @@ func (h *handoffCtx) handOff(ctx context.Context) error {
 		h.printManual()
 		return err
 	}
-	if out, err := exec.CommandContext(ctx, "ssh", append(remote.Args(h.host(peer)), start)...).CombinedOutput(); err != nil {
+	if out, err := h.run.Run(ctx, "ssh", remote.SSHArgs(h.host(peer), start)...); err != nil {
 		// Not retried on another peer: if ssh broke after systemd-run, the run
 		// may well be going, and two of them must not be.
 		h.lg.Warnf("starting the run on %s failed: %v: %s", peer, err, strings.TrimSpace(string(out)))
@@ -206,9 +210,7 @@ func (h *handoffCtx) follow(ctx context.Context, peer, unit string) {
 	u := remote.Quote(unit)
 	script := "journalctl -o cat -n all -fu " + u + " & j=$!; sleep 2; " +
 		"while systemctl -q is-active " + u + "; do sleep 2; done; sleep 1; kill $j"
-	cmd := exec.CommandContext(ctx, "ssh", append(remote.Args(h.host(peer)), script)...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	_ = cmd.Run()
+	_ = h.run.Stream(ctx, os.Stdout, os.Stderr, "ssh", remote.SSHArgs(h.host(peer), script)...)
 	if ctx.Err() == nil {
 		fmt.Printf("\n(the run on %s has ended; its result is above)\n", peer)
 	}

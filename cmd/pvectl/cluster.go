@@ -11,6 +11,7 @@ import (
 
 	"github.com/TomayGo/pvectl/internal/alert"
 	"github.com/TomayGo/pvectl/internal/plan"
+	"github.com/TomayGo/pvectl/internal/remote"
 	"github.com/TomayGo/pvectl/internal/state"
 	"github.com/TomayGo/pvectl/internal/talos"
 	"github.com/TomayGo/pvectl/internal/wol"
@@ -130,15 +131,16 @@ func runRolling(cmd *cobra.Command, command string) error {
 	}
 
 	order := cfg.RollingOrder()
+	dir := g.stateDir
 	saveProgress := func(p *state.Rolling) {
 		if g.opts.DryRun {
 			return
 		}
-		if err := p.Save(state.Dir); err != nil {
+		if err := p.Save(dir); err != nil {
 			lg.Warnf("could not record progress: %v", err)
 		}
 	}
-	prog, err := state.LoadRolling(state.Dir)
+	prog, err := state.LoadRolling(dir)
 	if err != nil {
 		lg.Warnf("%v", err)
 		prog = nil
@@ -155,7 +157,7 @@ func runRolling(cmd *cobra.Command, command string) error {
 		// The run was handed over precisely because it had progress; without
 		// it this would start over from the first node.
 		return fmt.Errorf("handed off from %s, but no rolling progress is recorded in %s; refusing to start over",
-			handoffFrom, state.Dir)
+			handoffFrom, dir)
 	}
 	fresh := prog == nil
 	if prog == nil && command == plan.CmdUpgrade {
@@ -188,7 +190,8 @@ func runRolling(cmd *cobra.Command, command string) error {
 
 	for _, node := range remaining {
 		if node == self {
-			h := &handoffCtx{cfg: cfg, lg: lg, fs: cmd.Flags(), command: command, prog: prog, self: self}
+			h := &handoffCtx{cfg: cfg, lg: lg, fs: cmd.Flags(), command: command, prog: prog, self: self,
+				stateDir: dir, run: remote.Exec{}}
 			if noHandoff {
 				saveProgress(prog)
 				lg.Plain("")
@@ -215,7 +218,7 @@ func runRolling(cmd *cobra.Command, command string) error {
 		saveProgress(prog)
 	}
 	if !g.opts.DryRun {
-		if err := state.RemoveRolling(state.Dir); err != nil {
+		if err := state.RemoveRolling(dir); err != nil {
 			lg.Warnf("could not clear rolling.json: %v", err)
 		}
 	}
@@ -635,5 +638,5 @@ func lockCluster(e *plan.Env, command string) (*state.Lock, bool, error) {
 	if e.Opts.DryRun {
 		return &state.Lock{}, false, nil
 	}
-	return state.AcquireOrAdopt(state.Dir, e.Self, "cluster", command)
+	return state.AcquireOrAdopt(e.StateDir, e.Self, "cluster", command)
 }
