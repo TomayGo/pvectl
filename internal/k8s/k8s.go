@@ -46,6 +46,14 @@ func New(kubeconfig string, lg *plog.Logger, dryRun bool) *Client {
 	return &Client{kubeconfig: kubeconfig, log: lg, dryRun: dryRun}
 }
 
+// NewForClientset is New around a ready-made clientset instead of a
+// kubeconfig. For tests, which pass client-go's fake.
+func NewForClientset(cs kubernetes.Interface, lg *plog.Logger, dryRun bool) *Client {
+	c := &Client{log: lg, dryRun: dryRun}
+	c.once.Do(func() { c.client = cs })
+	return c
+}
+
 func (c *Client) cs() (kubernetes.Interface, error) {
 	c.once.Do(func() {
 		cfg, err := clientcmd.BuildConfigFromFlags("", c.kubeconfig)

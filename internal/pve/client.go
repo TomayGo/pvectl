@@ -23,6 +23,7 @@ import (
 	"time"
 
 	plog "github.com/TomayGo/pvectl/internal/log"
+	"github.com/TomayGo/pvectl/internal/remote"
 )
 
 // RootCAPath is the cluster CA that signs every node's pveproxy certificate.
@@ -43,11 +44,26 @@ type Client struct {
 	// lastGood remembers the endpoint that worked, so a run does not re-probe
 	// a dead node on every call.
 	lastGood string
+	// transport, when set, replaces the TLS transport pinned to the cluster CA.
+	transport http.RoundTripper
+	// runner runs the local ha-manager (ha.go).
+	runner remote.Runner
 }
 
 type Option func(*Client)
 
 func WithDryRun(v bool) Option { return func(c *Client) { c.DryRun = v } }
+
+// WithTransport sends every request through rt instead of dialling pveproxy
+// with the cluster CA pinned, and New then does not read the CA at all. It
+// exists for tests: rt can be an in-process fake, or a round tripper that
+// redirects to an httptest.Server. The request keeps its
+// https://<endpoint>:8006/api2/json/... URL, so rt sees which endpoint was
+// asked.
+func WithTransport(rt http.RoundTripper) Option { return func(c *Client) { c.transport = rt } }
+
+// WithRunner replaces what runs the local ha-manager. For tests.
+func WithRunner(r remote.Runner) Option { return func(c *Client) { c.runner = r } }
 
 // New builds a client. tokenFile holds a single line "USER@REALM!NAME=SECRET",
 // the exact string `pvesh create /access/users/.../token` prints.
@@ -56,6 +72,28 @@ func New(endpoints []string, tokenFile string, lg *plog.Logger, opts ...Option) 
 	if err != nil {
 		return nil, err
 	}
+	c := &Client{
+		endpoints: append([]string(nil), endpoints...),
+		tokenID:   id,
+		tokenSec:  sec,
+		log:       lg,
+		runner:    remote.Exec{},
+	}
+	for _, o := range opts {
+		o(c)
+	}
+	rt := c.transport
+	if rt == nil {
+		if rt, err = caTransport(); err != nil {
+			return nil, err
+		}
+	}
+	c.http = &http.Client{Timeout: 30 * time.Second, Transport: rt}
+	return c, nil
+}
+
+// caTransport dials pveproxy and verifies it against the cluster CA.
+func caTransport() (http.RoundTripper, error) {
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if pem, err := os.ReadFile(RootCAPath); err == nil {
 		pool := x509.NewCertPool()
@@ -67,24 +105,11 @@ func New(endpoints []string, tokenFile string, lg *plog.Logger, opts ...Option) 
 	} else {
 		return nil, fmt.Errorf("read cluster CA %s: %w", RootCAPath, err)
 	}
-	c := &Client{
-		endpoints: append([]string(nil), endpoints...),
-		tokenID:   id,
-		tokenSec:  sec,
-		log:       lg,
-		http: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig:     tlsCfg,
-				DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-				MaxIdleConnsPerHost: 4,
-			},
-		},
-	}
-	for _, o := range opts {
-		o(c)
-	}
-	return c, nil
+	return &http.Transport{
+		TLSClientConfig:     tlsCfg,
+		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		MaxIdleConnsPerHost: 4,
+	}, nil
 }
 
 func readToken(path string) (id, secret string, err error) {

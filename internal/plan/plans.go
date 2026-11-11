@@ -106,7 +106,7 @@ func NewRunner(e *Env, command string) (*Runner, error) {
 	e.KeepLock = KeepsLockOnSuccess(command)
 
 	continues := command == CmdStart || command == CmdMaintExit
-	existing, lerr := state.LoadState(state.Dir)
+	existing, lerr := state.LoadState(e.StateDir)
 	if lerr != nil && existing == nil {
 		return nil, lerr
 	}
@@ -129,9 +129,9 @@ func NewRunner(e *Env, command string) (*Runner, error) {
 		e.State = existing
 	case continues && existing == nil:
 		e.Log.Warnf("no earlier state found for %s; restore will only do what it can infer", e.Target)
-		e.State = state.NewState(state.Dir, command, e.Target, e.Self, r.StepNames())
+		e.State = state.NewState(e.StateDir, command, e.Target, e.Self, r.StepNames())
 	default:
-		fresh := state.NewState(state.Dir, command, e.Target, e.Self, r.StepNames())
+		fresh := state.NewState(e.StateDir, command, e.Target, e.Self, r.StepNames())
 		if existing != nil && !existing.Finished {
 			e.Log.Warnf("discarding an unfinished %s %s state; run `pvectl abort` first if you meant to roll it back",
 				existing.Command, existing.Target)

@@ -22,6 +22,7 @@ import (
 	"github.com/TomayGo/pvectl/internal/config"
 	plog "github.com/TomayGo/pvectl/internal/log"
 	"github.com/TomayGo/pvectl/internal/plan"
+	"github.com/TomayGo/pvectl/internal/state"
 )
 
 var version = "dev"
@@ -31,9 +32,16 @@ type globals struct {
 	logDir     string
 	verbose    bool
 	opts       plan.Options
+	// stateDir is where the lock, state.json and rolling.json live. There is
+	// no flag for it: it is state.Dir unless a test points it elsewhere.
+	stateDir string
 }
 
-var g = globals{opts: plan.DefaultOptions()}
+var g = globals{opts: plan.DefaultOptions(), stateDir: state.Dir}
+
+// buildEnv wires up the clients a command works through. It is plan.NewEnv
+// unless a test replaces it to hand the command an Env made of fakes.
+var buildEnv = plan.NewEnv
 
 func main() {
 	root := newRoot()
@@ -141,11 +149,12 @@ func newEnv(target string) (*plan.Env, *plog.Logger, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	e, err := plan.NewEnv(cfg, target, lg, g.opts)
+	e, err := buildEnv(cfg, target, lg, g.opts)
 	if err != nil {
 		lg.Close()
 		return nil, nil, err
 	}
+	e.StateDir = g.stateDir
 	if lg.Path != "" {
 		lg.Debugf("transcript: %s", lg.Path)
 	}
