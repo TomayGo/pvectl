@@ -30,10 +30,9 @@ type handoffFixture struct {
 
 func newHandoff(t *testing.T, answer func(remotetest.Call) remotetest.Result) *handoffFixture {
 	t.Helper()
-	saved := g
-	t.Cleanup(func() { g = saved })
-	g = globals{opts: plan.DefaultOptions(), stateDir: t.TempDir()}
-	g.opts.Yes = true
+	opts := plan.DefaultOptions()
+	opts.Yes = true
+	dir := t.TempDir()
 
 	exe, err := os.Executable()
 	if err == nil {
@@ -51,8 +50,8 @@ func newHandoff(t *testing.T, answer func(remotetest.Call) remotetest.Result) *h
 	}
 	f.h = &handoffCtx{
 		cfg: fixtureConfig(t), lg: plog.To(f.out), fs: fs, command: plan.CmdReboot, self: "node-a",
-		prog:     &state.Rolling{Command: rollingReboot, Order: []string{"node-c", "node-b", "node-a"}, Done: []string{"node-c", "node-b"}},
-		stateDir: g.stateDir, run: f.run,
+		prog: &state.Rolling{Command: rollingReboot, Order: []string{"node-c", "node-b", "node-a"}, Done: []string{"node-c", "node-b"}},
+		opts: opts, stateDir: dir, run: f.run,
 	}
 	return f
 }
@@ -85,7 +84,7 @@ func TestHandoffProbe(t *testing.T) {
 		t.Errorf("ssh options %v", got)
 	}
 	want := "/usr/local/bin/pvectl --version; command -v systemd-run >/dev/null || echo no-systemd-run; " +
-		"test -s " + filepath.Join(g.stateDir, "rolling.json") + " && echo progress-ok; true"
+		"test -s " + filepath.Join(f.h.stateDir, "rolling.json") + " && echo progress-ok; true"
 	if got := calls[0].Script(); got != want {
 		t.Errorf("script:\n got %s\nwant %s", got, want)
 	}
@@ -111,7 +110,7 @@ func TestHandoffProbeRefusals(t *testing.T) {
 	}
 	for _, c := range cases {
 		f := newHandoff(t, func(remotetest.Call) remotetest.Result { return c.result })
-		g.opts.DryRun = c.dryRun
+		f.h.opts.DryRun = c.dryRun
 		err := f.h.probe(context.Background(), "node-b", "/usr/local/bin/pvectl")
 		switch {
 		case c.want == "" && err != nil:
@@ -129,7 +128,7 @@ func TestHandOffStartsTheRunOnAPeer(t *testing.T) {
 	if err := f.h.handOff(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	saved, err := state.LoadRolling(g.stateDir)
+	saved, err := state.LoadRolling(f.h.stateDir)
 	if err != nil || saved == nil || !reflect.DeepEqual(saved.Done, []string{"node-c", "node-b"}) {
 		t.Fatalf("rolling.json: %+v, %v", saved, err)
 	}
@@ -255,14 +254,14 @@ func TestHandOffDoesNotRetryAFailedStart(t *testing.T) {
 // starts anything.
 func TestHandOffDryRun(t *testing.T) {
 	f := newHandoff(t, peerOK)
-	g.opts.DryRun = true
+	f.h.opts.DryRun = true
 	if err := f.h.handOff(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(f.run.Calls()); n != 1 {
 		t.Errorf("%d ssh call(s), want only the probe", n)
 	}
-	if prog, _ := state.LoadRolling(g.stateDir); prog != nil {
+	if prog, _ := state.LoadRolling(f.h.stateDir); prog != nil {
 		t.Error("dry-run saved rolling.json")
 	}
 	l := f.lines()
@@ -275,7 +274,7 @@ func TestHandOffDryRun(t *testing.T) {
 // the peer would start the whole run over.
 func TestHandOffNeedsProgressSaved(t *testing.T) {
 	f := newHandoff(t, peerOK)
-	f.h.stateDir = filepath.Join(g.stateDir, "gone")
+	f.h.stateDir = filepath.Join(f.h.stateDir, "gone")
 	err := f.h.handOff(context.Background())
 	if err == nil || !strings.HasPrefix(err.Error(), "record progress before hand-off: ") {
 		t.Errorf("error %v", err)

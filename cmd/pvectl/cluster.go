@@ -37,7 +37,7 @@ func rollingWhat(command string) string {
 	return "rolling reboot"
 }
 
-func newRollingCmd() *cobra.Command {
+func (g *globals) newRollingCmd() *cobra.Command {
 	c := &cobra.Command{Use: "rolling", Short: "Cluster-wide sequential operations"}
 	reboot := &cobra.Command{
 		Use:   "reboot cluster",
@@ -56,7 +56,7 @@ with. Progress is recorded, so re-running it continues where it left off.`),
 		Args:              rollingArgs,
 		ValidArgsFunction: completeCluster,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRolling(cmd, plan.CmdReboot)
+			return g.runRolling(cmd, plan.CmdReboot)
 		},
 	}
 	reboot.Flags().Bool("restart", false, "discard recorded progress and start from the first node")
@@ -83,12 +83,12 @@ Kubernetes itself (talosctl upgrade-k8s) is not part of this.`),
 		Args:              rollingArgs,
 		ValidArgsFunction: completeCluster,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRolling(cmd, plan.CmdUpgrade)
+			return g.runRolling(cmd, plan.CmdUpgrade)
 		},
 	}
 	upgrade.Flags().Bool("restart", false, "discard recorded progress and start from the first node")
 	addHandoffFlags(upgrade)
-	withTalosFlags(upgrade)
+	g.withTalosFlags(upgrade)
 
 	c.AddCommand(reboot, upgrade)
 	return c
@@ -104,7 +104,7 @@ func rollingArgs(cmd *cobra.Command, args []string) error {
 // runRolling applies a single-node command (reboot or upgrade) to every node in
 // turn. Each node gets the full plan, verify included, so the next node only
 // starts once the cluster is whole again.
-func runRolling(cmd *cobra.Command, command string) error {
+func (g *globals) runRolling(cmd *cobra.Command, command string) error {
 	ctx := cmd.Context()
 	restart, err := cmd.Flags().GetBool("restart")
 	if err != nil {
@@ -118,7 +118,7 @@ func runRolling(cmd *cobra.Command, command string) error {
 	if err != nil {
 		return err
 	}
-	cfg, lg, err := setup()
+	cfg, lg, err := g.setup()
 	if err != nil {
 		return err
 	}
@@ -161,7 +161,7 @@ func runRolling(cmd *cobra.Command, command string) error {
 	}
 	fresh := prog == nil
 	if prog == nil && command == plan.CmdUpgrade {
-		if err := resolveTalosAlias(ctx, cfg, lg); err != nil {
+		if err := g.resolveTalosAlias(ctx, cfg, lg); err != nil {
 			return err
 		}
 	}
@@ -174,7 +174,7 @@ func runRolling(cmd *cobra.Command, command string) error {
 		if handoffFrom != "" {
 			lg.Plain("handed off from %s", handoffFrom)
 		}
-		if err := adoptRecordedTalosTarget(prog); err != nil {
+		if err := g.adoptRecordedTalosTarget(prog); err != nil {
 			return err
 		}
 	}
@@ -184,14 +184,14 @@ func runRolling(cmd *cobra.Command, command string) error {
 	lg.Plain("order: %s", strings.Join(order, " -> "))
 	lg.Plain("remaining: %s", strings.Join(remaining, ", "))
 	if command == plan.CmdUpgrade {
-		lg.Plain("talos: %s", talosTargetLabel())
+		lg.Plain("talos: %s", g.talosTargetLabel())
 	}
 	lg.Plain("")
 
 	for _, node := range remaining {
 		if node == self {
 			h := &handoffCtx{cfg: cfg, lg: lg, fs: cmd.Flags(), command: command, prog: prog, self: self,
-				stateDir: dir, run: sshRunner}
+				opts: g.opts, stateDir: dir, run: g.ssh}
 			if noHandoff {
 				saveProgress(prog)
 				lg.Plain("")
@@ -203,7 +203,7 @@ func runRolling(cmd *cobra.Command, command string) error {
 		}
 		lg.Plain("")
 		lg.Plain("================ %s ================", node)
-		if err := runNodeOp(ctx, node, command, true); err != nil {
+		if err := g.runNodeOp(ctx, node, command, true); err != nil {
 			// Declining the first node's confirmation means this rolling run
 			// never began. Recording it would make the next invocation
 			// "continue" it -- with whatever Talos target this one had --
@@ -230,7 +230,7 @@ func runRolling(cmd *cobra.Command, command string) error {
 // adoptRecordedTalosTarget makes a continued rolling upgrade use the release it
 // started with. Omitting the flag on the second invocation is the normal case
 // and inherits it; naming a different one is refused.
-func adoptRecordedTalosTarget(prog *state.Rolling) error {
+func (g *globals) adoptRecordedTalosTarget(prog *state.Rolling) error {
 	if prog.Command != rollingUpgrade {
 		return nil
 	}
@@ -255,7 +255,7 @@ func adoptRecordedTalosTarget(prog *state.Rolling) error {
 	return nil
 }
 
-func talosTargetLabel() string {
+func (g *globals) talosTargetLabel() string {
 	switch {
 	case g.opts.TalosVersion != "":
 		return g.opts.TalosVersion + " (image derived from each node's machine.install.image)"
@@ -284,7 +284,7 @@ func otherThan(list []string, v string) []string {
 
 // ---------- shutdown cluster ----------
 
-func shutdownClusterCmd() *cobra.Command {
+func (g *globals) shutdownClusterCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "cluster",
 		Short: "Stop every node (full Ceph freeze)",
@@ -296,12 +296,12 @@ peers first, the node running pvectl last.
 There is no drain and no HA evacuation: with the whole cluster going down there
 is nowhere to move anything to.`),
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error { return runClusterShutdown(cmd.Context()) },
+		RunE: func(cmd *cobra.Command, args []string) error { return g.runClusterShutdown(cmd.Context()) },
 	}
 }
 
-func runClusterShutdown(ctx context.Context) error {
-	e, lg, err := newEnv("")
+func (g *globals) runClusterShutdown(ctx context.Context) error {
+	e, lg, err := g.newEnv("")
 	if err != nil {
 		return err
 	}
@@ -461,7 +461,7 @@ func shutdownGuest(ctx context.Context, e *plan.Env, node, kind string, vmid int
 
 // ---------- start cluster ----------
 
-func startClusterCmd() *cobra.Command {
+func (g *globals) startClusterCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "cluster",
 		Short: "Wake every node and lift the freeze",
@@ -470,12 +470,12 @@ Wakes every node that is not already up, waits for corosync, Ceph and
 kubernetes, then clears the freeze flags -- pause last, so IO only resumes once
 the OSDs are back and the cluster can serve it.`),
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error { return runClusterStart(cmd.Context()) },
+		RunE: func(cmd *cobra.Command, args []string) error { return g.runClusterStart(cmd.Context()) },
 	}
 }
 
-func runClusterStart(ctx context.Context) error {
-	e, lg, err := newEnv("")
+func (g *globals) runClusterStart(ctx context.Context) error {
+	e, lg, err := g.newEnv("")
 	if err != nil {
 		return err
 	}

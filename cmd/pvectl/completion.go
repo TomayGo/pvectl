@@ -15,7 +15,7 @@ import (
 // It must never fail loudly: a missing or unreadable config just means no
 // suggestions.
 
-func configNodeNames() []string {
+func (g *globals) configNodeNames() []string {
 	cfg, err := config.Load(g.configPath)
 	if err != nil {
 		return nil
@@ -25,23 +25,23 @@ func configNodeNames() []string {
 
 // completeNodeOp handles both argument shapes nodeOpCmd accepts:
 // `reboot node <name>` and `plan reboot node <name>`.
-func completeNodeOp(use string) cobra.CompletionFunc {
+func (g *globals) completeNodeOp(use string) cobra.CompletionFunc {
 	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		switch {
 		case use != "node" && len(args) == 0:
 			return []string{"node"}, cobra.ShellCompDirectiveNoFileComp
 		case use == "node" && len(args) == 0, use != "node" && len(args) == 1:
-			return configNodeNames(), cobra.ShellCompDirectiveNoFileComp
+			return g.configNodeNames(), cobra.ShellCompDirectiveNoFileComp
 		}
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 }
 
-func completeNodeOptional(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+func (g *globals) completeNodeOptional(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) > 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	return configNodeNames(), cobra.ShellCompDirectiveNoFileComp
+	return g.configNodeNames(), cobra.ShellCompDirectiveNoFileComp
 }
 
 func completeCluster(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
