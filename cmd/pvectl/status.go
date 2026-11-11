@@ -378,6 +378,145 @@ func doctorCephFlags(ctx context.Context, lg *plog.Logger, pc cephFlagSetter, ma
 	return found
 }
 
+// leftover is one kind of thing an interrupted maintenance leaves behind:
+// how doctor finds it, how it words the finding, and how --fix clears it.
+type leftover struct {
+	// label is the left-hand column, padded to the width of the report.
+	label string
+	// find lists what is left over; nothing means clean.
+	find func(ctx context.Context) ([]string, error)
+	// found words the warning from what find returned.
+	found func(items []string) string
+	// clean is what to say when nothing is left; "" says nothing.
+	clean string
+	// uncounted keeps the finding out of the "N issue(s)" total.
+	uncounted bool
+	// fix clears one item. nil means doctor can only report it.
+	fix func(ctx context.Context, item string) error
+	// doing and done word the attempt and its success; %s is the item.
+	doing, done string
+}
+
+// report prints the finding, applies the fix when asked, and returns how many
+// issues it adds to the total.
+func (l leftover) report(ctx context.Context, lg *plog.Logger, fix bool) int {
+	items, err := l.find(ctx)
+	if err != nil {
+		lg.Plain("[fail] %s: %v", l.label, err)
+		return 0
+	}
+	if len(items) == 0 {
+		if l.clean != "" {
+			lg.Plain("[ok]   %s: %s", l.label, l.clean)
+		}
+		return 0
+	}
+	lg.Plain("[warn] %s: %s", l.label, l.found(items))
+	if fix && l.fix != nil {
+		for _, item := range items {
+			if err := l.fix(ctx, item); err != nil {
+				lg.Plain("       -> %s failed: %v", strings.Replace(l.doing, "%s", item, 1), err)
+				continue
+			}
+			lg.Plain("       -> %s", strings.Replace(l.done, "%s", item, 1))
+		}
+	}
+	if l.uncounted {
+		return 0
+	}
+	return 1
+}
+
+// doctorLeftovers lists what doctor looks for after the ceph flags, in the
+// order it reports them.
+func doctorLeftovers(e *plan.Env, held *state.LockInfo, st *state.State, staleLock, inProgress bool) []leftover {
+	one := func(present bool) func(context.Context) ([]string, error) {
+		return func(context.Context) ([]string, error) {
+			if present {
+				return []string{""}, nil
+			}
+			return nil, nil
+		}
+	}
+	return []leftover{
+		{
+			label: "kubernetes   ",
+			find:  e.K8s.Cordoned,
+			found: func(nodes []string) string { return "cordoned: " + strings.Join(nodes, " ") },
+			clean: "no node is cordoned",
+			fix:   func(ctx context.Context, n string) error { return e.K8s.SetSchedulable(ctx, n, true) },
+			doing: "uncordon %s", done: "uncordoned %s",
+		},
+		{
+			label: "silences     ",
+			find: func(ctx context.Context) ([]string, error) {
+				sil, err := e.Alert.OwnSilences(ctx)
+				ids := make([]string, 0, len(sil))
+				for _, s := range sil {
+					ids = append(ids, s.ID)
+				}
+				return ids, err
+			},
+			found: func(ids []string) string { return fmt.Sprintf("%d pvectl silence(s) still active", len(ids)) },
+			clean: "none",
+			fix:   e.Alert.DeleteSilence,
+			doing: "expiring %s", done: "expired %s",
+		},
+		{
+			// HA node maintenance left on. An open run owns its own and ends
+			// it in restore or abort; with none open, nothing else will.
+			label: "ha maint.    ",
+			find: func(ctx context.Context) ([]string, error) {
+				ms, err := e.PVE.HAManagerStatus(ctx)
+				if err != nil {
+					return nil, err
+				}
+				return ms.MaintenanceNodes(), nil
+			},
+			found: func(nodes []string) string { return strings.Join(nodes, " ") + " in HA maintenance" },
+			clean: "no node in HA maintenance",
+			fix:   func(ctx context.Context, n string) error { return e.PVE.SetHANodeMaintenance(ctx, n, false) },
+			doing: "ending maintenance on %s", done: "maintenance end requested for %s (HA moves its resources back)",
+		},
+		{
+			// a lock with no run behind it
+			label: "lock         ",
+			find:  one(staleLock),
+			found: func([]string) string {
+				return fmt.Sprintf("held by %s for %s with no matching run", held.Holder, held.Target)
+			},
+			fix:   func(context.Context, string) error { return state.ForceRelease(e.StateDir) },
+			doing: "release", done: "released",
+		},
+		{
+			label: "state.json   ",
+			find:  one(!inProgress && st != nil && st.Finished),
+			found: func([]string) string {
+				return fmt.Sprintf("a finished %s %s run is still recorded", st.Command, st.Target)
+			},
+			uncounted: true,
+			fix:       func(context.Context, string) error { return state.RemoveState(e.StateDir) },
+			doing:     "remove", done: "removed",
+		},
+		{
+			// Offline nodes are reported, not fixed: starting one is a
+			// maintenance of its own. A cluster status that cannot be read
+			// is passed over without a line.
+			label: "cluster      ",
+			find: func(ctx context.Context) ([]string, error) {
+				cs, err := e.PVE.ClusterStatus(ctx)
+				if err != nil {
+					return nil, nil
+				}
+				return cs.Offline, nil
+			},
+			found: func(nodes []string) string {
+				return "offline node(s): " + strings.Join(nodes, " ") + " -- start with `pvectl start node <name>`"
+			},
+		},
+	}
+}
+
 func runDoctor(ctx context.Context, e *plan.Env, fix bool) error {
 	lg := e.Log
 	lg.Plain("pvectl doctor (from %s)%s", e.Self, map[bool]string{true: " --fix", false: ""}[fix])
@@ -414,92 +553,8 @@ func runDoctor(ctx context.Context, e *plan.Env, fix bool) error {
 		found += doctorCephFlags(ctx, lg, e.PVE, e.Cfg.Cluster.CephFlags, flags, fix)
 	}
 
-	// cordoned kubernetes nodes
-	if cordoned, err := e.K8s.Cordoned(ctx); err != nil {
-		lg.Plain("[fail] kubernetes   : %v", err)
-	} else if len(cordoned) > 0 {
-		found++
-		lg.Plain("[warn] kubernetes   : cordoned: %s", strings.Join(cordoned, " "))
-		if fix {
-			for _, n := range cordoned {
-				if err := e.K8s.SetSchedulable(ctx, n, true); err != nil {
-					lg.Plain("       -> uncordon %s failed: %v", n, err)
-					continue
-				}
-				lg.Plain("       -> uncordoned %s", n)
-			}
-		}
-	} else {
-		lg.Plain("[ok]   kubernetes   : no node is cordoned")
-	}
-
-	// pvectl silences
-	if sil, err := e.Alert.OwnSilences(ctx); err != nil {
-		lg.Plain("[fail] silences     : %v", err)
-	} else if len(sil) > 0 {
-		found++
-		lg.Plain("[warn] silences     : %d pvectl silence(s) still active", len(sil))
-		if fix {
-			for _, s := range sil {
-				if err := e.Alert.DeleteSilence(ctx, s.ID); err != nil {
-					lg.Plain("       -> expiring %s failed: %v", s.ID, err)
-					continue
-				}
-				lg.Plain("       -> expired %s", s.ID)
-			}
-		}
-	} else {
-		lg.Plain("[ok]   silences     : none")
-	}
-
-	// HA node maintenance left on. An open run owns its own and ends it in
-	// restore or abort; with none open, nothing else will.
-	if ms, err := e.PVE.HAManagerStatus(ctx); err != nil {
-		lg.Plain("[fail] ha maint.    : %v", err)
-	} else if nodes := ms.MaintenanceNodes(); len(nodes) > 0 {
-		found++
-		lg.Plain("[warn] ha maint.    : %s in HA maintenance", strings.Join(nodes, " "))
-		if fix {
-			for _, n := range nodes {
-				if err := e.PVE.SetHANodeMaintenance(ctx, n, false); err != nil {
-					lg.Plain("       -> ending maintenance on %s failed: %v", n, err)
-					continue
-				}
-				lg.Plain("       -> maintenance end requested for %s (HA moves its resources back)", n)
-			}
-		}
-	} else {
-		lg.Plain("[ok]   ha maint.    : no node in HA maintenance")
-	}
-
-	// a lock with no run behind it
-	if staleLock {
-		found++
-		lg.Plain("[warn] lock         : held by %s for %s with no matching run", held.Holder, held.Target)
-		if fix {
-			if err := state.ForceRelease(e.StateDir); err != nil {
-				lg.Plain("       -> release failed: %v", err)
-			} else {
-				lg.Plain("       -> released")
-			}
-		}
-	}
-	if !inProgress && st != nil && st.Finished {
-		lg.Plain("[warn] state.json   : a finished %s %s run is still recorded", st.Command, st.Target)
-		if fix {
-			if err := state.RemoveState(e.StateDir); err != nil {
-				lg.Plain("       -> remove failed: %v", err)
-			} else {
-				lg.Plain("       -> removed")
-			}
-		}
-	}
-
-	// offline nodes
-	if cs, err := e.PVE.ClusterStatus(ctx); err == nil && len(cs.Offline) > 0 {
-		found++
-		lg.Plain("[warn] cluster      : offline node(s): %s -- start with `pvectl start node <name>`",
-			strings.Join(cs.Offline, " "))
+	for _, l := range doctorLeftovers(e, held, st, staleLock, inProgress) {
+		found += l.report(ctx, lg, fix)
 	}
 
 	lg.Plain("")
