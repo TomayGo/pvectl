@@ -27,6 +27,17 @@ type Client struct {
 	configPath string
 	log        *plog.Logger
 	dryRun     bool
+	// probe stands in for Alive in WaitDown and WaitUp. Only tests set it:
+	// there is no Talos API to dial in them.
+	probe func(ctx context.Context, ip string) (bool, error)
+}
+
+// alive is Alive, or the probe a test installed.
+func (c *Client) alive(ctx context.Context, ip string) (bool, error) {
+	if c.probe != nil {
+		return c.probe(ctx, ip)
+	}
+	return c.Alive(ctx, ip)
 }
 
 func New(talosconfig string, lg *plog.Logger, dryRun bool) *Client {
@@ -107,7 +118,7 @@ func (c *Client) WaitDown(ctx context.Context, ip string, timeout time.Duration)
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		alive, err := c.Alive(ctx, ip)
+		alive, err := c.alive(ctx, ip)
 		if err != nil {
 			return fmt.Errorf("cannot tell whether %s is down: %w", ip, err)
 		}
@@ -131,7 +142,7 @@ func (c *Client) WaitUp(ctx context.Context, ip string, timeout time.Duration) e
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		alive, err := c.Alive(ctx, ip)
+		alive, err := c.alive(ctx, ip)
 		if err != nil {
 			return fmt.Errorf("cannot reach %s: %w", ip, err)
 		}

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
@@ -162,11 +161,6 @@ func (m *HAManagerStatus) ReturningTo(node string) []string {
 
 // ---------- node maintenance ----------
 
-// runHAManager runs the local ha-manager CLI. A variable so tests can stand in.
-var runHAManager = func(ctx context.Context, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, "ha-manager", args...).CombinedOutput()
-}
-
 // NodeMaintenanceArgs is the ha-manager command line that turns HA
 // maintenance on or off for a node.
 func NodeMaintenanceArgs(node string, on bool) []string {
@@ -192,7 +186,7 @@ func (c *Client) SetHANodeMaintenance(ctx context.Context, node string, on bool)
 		return nil
 	}
 	c.log.Infof("running %s", line)
-	out, err := runHAManager(ctx, args...)
+	out, err := c.runner.Run(ctx, "ha-manager", args...)
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg != "" {

@@ -36,7 +36,7 @@ func showStatus(ctx context.Context, e *plan.Env) error {
 	lg.Plain("pvectl status (from %s)", e.Self)
 	lg.Plain("")
 
-	held, err := state.Peek(state.Dir)
+	held, err := state.Peek(e.StateDir)
 	switch {
 	case err != nil:
 		lg.Plain("maintenance lock : unreadable (%v)", err)
@@ -49,7 +49,7 @@ func showStatus(ctx context.Context, e *plan.Env) error {
 			held.Holder, held.PID)
 	}
 
-	st, serr := state.LoadState(state.Dir)
+	st, serr := state.LoadState(e.StateDir)
 	if serr != nil {
 		lg.Plain("run state        : unreadable (%v)", serr)
 	} else if st == nil {
@@ -78,7 +78,7 @@ func showStatus(ctx context.Context, e *plan.Env) error {
 			lg.Plain("    next step: %s (`pvectl resume` continues, `pvectl abort` rolls back)", next)
 		}
 	}
-	if roll, err := state.LoadRolling(state.Dir); err == nil && roll != nil {
+	if roll, err := state.LoadRolling(e.StateDir); err == nil && roll != nil {
 		lg.Plain("%-17s: done %s; remaining %s", rollingWhat(roll.Command),
 			strings.Join(roll.Done, ", "), strings.Join(roll.Remaining(), ", "))
 	}
@@ -211,7 +211,7 @@ func newResumeCmd() *cobra.Command {
 		Short: "Continue the interrupted run recorded in state.json",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := state.LoadState(state.Dir)
+			st, err := state.LoadState(g.stateDir)
 			if err != nil {
 				return err
 			}
@@ -246,7 +246,7 @@ func newResumeCmd() *cobra.Command {
 				lg.Warnf("%v", err)
 			}
 			if !plan.KeepsLockOnSuccess(st.Command) && !e.Opts.DryRun {
-				if err := state.RemoveState(state.Dir); err != nil {
+				if err := state.RemoveState(e.StateDir); err != nil {
 					lg.Warnf("could not clear state.json: %v", err)
 				}
 			}
@@ -278,7 +278,7 @@ reported rather than silently skipped, because the operator still has to deal
 with them.`),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := state.LoadState(state.Dir)
+			st, err := state.LoadState(g.stateDir)
 			if err != nil {
 				return err
 			}
@@ -298,7 +298,7 @@ with them.`),
 			// Rollback must be able to release the lock even though the
 			// original command wanted to keep it.
 			e.KeepLock = false
-			if held, _ := state.Peek(state.Dir); held != nil {
+			if held, _ := state.Peek(e.StateDir); held != nil {
 				e.Lock = &state.Lock{Info: *held}
 				lg.Plain("lock held for %s by %s", held.Target, held.Holder)
 			}
@@ -308,10 +308,10 @@ with them.`),
 			}
 			rbErr := r.Rollback(cmd.Context())
 			if !e.Opts.DryRun {
-				if err := state.ForceRelease(state.Dir); err != nil {
+				if err := state.ForceRelease(e.StateDir); err != nil {
 					lg.Warnf("could not release the lock: %v", err)
 				}
-				if err := state.RemoveState(state.Dir); err != nil {
+				if err := state.RemoveState(e.StateDir); err != nil {
 					lg.Warnf("could not clear state.json: %v", err)
 				}
 			}
@@ -393,8 +393,8 @@ func runDoctor(ctx context.Context, e *plan.Env, fix bool) error {
 	lg.Plain("pvectl doctor (from %s)%s", e.Self, map[bool]string{true: " --fix", false: ""}[fix])
 	lg.Plain("")
 
-	held, _ := state.Peek(state.Dir)
-	st, _ := state.LoadState(state.Dir)
+	held, _ := state.Peek(e.StateDir)
+	st, _ := state.LoadState(e.StateDir)
 	// A lock paired with a run for the same node is an open maintenance
 	// window, even when that run finished: `shutdown node X` leaves the node
 	// off and the lock held until `start node X` closes it. A lock with no run
@@ -487,7 +487,7 @@ func runDoctor(ctx context.Context, e *plan.Env, fix bool) error {
 		found++
 		lg.Plain("[warn] lock         : held by %s for %s with no matching run", held.Holder, held.Target)
 		if fix {
-			if err := state.ForceRelease(state.Dir); err != nil {
+			if err := state.ForceRelease(e.StateDir); err != nil {
 				lg.Plain("       -> release failed: %v", err)
 			} else {
 				lg.Plain("       -> released")
@@ -497,7 +497,7 @@ func runDoctor(ctx context.Context, e *plan.Env, fix bool) error {
 	if !inProgress && st != nil && st.Finished {
 		lg.Plain("[warn] state.json   : a finished %s %s run is still recorded", st.Command, st.Target)
 		if fix {
-			if err := state.RemoveState(state.Dir); err != nil {
+			if err := state.RemoveState(e.StateDir); err != nil {
 				lg.Plain("       -> remove failed: %v", err)
 			} else {
 				lg.Plain("       -> removed")
