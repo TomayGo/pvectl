@@ -210,6 +210,27 @@ func runNodeOp(ctx context.Context, target, command string, fromRolling bool) er
 	if err := r.Run(ctx); err != nil {
 		return err
 	}
+	closeRun(e, command, target, fromRolling)
+	e.Log.Plain("")
+	e.Log.Plain("%s %s completed in %s.", command, target, elapsed(start))
+	if plan.KeepsLockOnSuccess(command) {
+		e.Log.Plain("%s stays under maintenance; finish with `pvectl %s node %s`.",
+			target, closingCommand(command), target)
+	}
+	if lg.Path != "" {
+		e.Log.Plain("transcript: %s", lg.Path)
+	}
+	return nil
+}
+
+// closeRun is what follows a plan that ran to its end, whether the command
+// itself got there or `resume` did: give the lock up unless the node is still
+// under maintenance, drop state.json when the window is closed, and count the
+// node in a rolling run that was waiting for it. A problem here is reported
+// and does not turn a finished run into a failed one.
+//
+// fromRolling says the caller is the rolling run, which keeps its own record.
+func closeRun(e *plan.Env, command, target string, fromRolling bool) {
 	if err := e.ReleaseLock(); err != nil {
 		e.Log.Warnf("%v", err)
 	}
@@ -221,16 +242,6 @@ func runNodeOp(ctx context.Context, target, command string, fromRolling bool) er
 	if !fromRolling && !e.Opts.DryRun {
 		closeRollingEntry(e, command, target)
 	}
-	e.Log.Plain("")
-	e.Log.Plain("%s %s completed in %s.", command, target, elapsed(start))
-	if plan.KeepsLockOnSuccess(command) {
-		e.Log.Plain("%s stays under maintenance; finish with `pvectl %s node %s`.",
-			target, closingCommand(command), target)
-	}
-	if lg.Path != "" {
-		e.Log.Plain("transcript: %s", lg.Path)
-	}
-	return nil
 }
 
 // closeRollingEntry marks a node done in an in-flight rolling reboot.
