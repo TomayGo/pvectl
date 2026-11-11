@@ -2,6 +2,7 @@ package pve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"path"
@@ -9,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/TomayGo/pvectl/internal/poll"
 )
 
 // ---------- cluster ----------
@@ -470,25 +473,21 @@ func (c *Client) WaitTask(ctx context.Context, node, upid string, timeout time.D
 	if upid == "" {
 		return nil
 	}
-	deadline := time.Now().Add(timeout)
-	for {
+	err := poll.Within(2*time.Second, timeout).Until(ctx, func() (bool, error) {
 		t, err := c.TaskStatus(ctx, node, upid)
 		if err != nil {
-			return err
+			return false, err
 		}
-		if t.Status != "running" {
-			if t.ExitState != "" && t.ExitState != "OK" {
-				return fmt.Errorf("task %s finished with %q", upid, t.ExitState)
-			}
-			return nil
+		if t.Status == "running" {
+			return false, nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("task %s still running after %s", upid, timeout)
+		if t.ExitState != "" && t.ExitState != "OK" {
+			return false, fmt.Errorf("task %s finished with %q", upid, t.ExitState)
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
+		return true, nil
+	})
+	if errors.Is(err, poll.ErrTimeout) {
+		return fmt.Errorf("task %s still running after %s", upid, timeout)
 	}
+	return err
 }

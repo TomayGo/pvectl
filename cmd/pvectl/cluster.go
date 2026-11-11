@@ -11,6 +11,7 @@ import (
 
 	"github.com/TomayGo/pvectl/internal/alert"
 	"github.com/TomayGo/pvectl/internal/plan"
+	"github.com/TomayGo/pvectl/internal/poll"
 	"github.com/TomayGo/pvectl/internal/state"
 	"github.com/TomayGo/pvectl/internal/talos"
 	"github.com/TomayGo/pvectl/internal/wol"
@@ -524,21 +525,19 @@ func runClusterStart(ctx context.Context) error {
 
 	e.Log.Step("wait-up", "wait for every node to rejoin")
 	if !e.Opts.DryRun {
-		deadline := time.Now().Add(e.Opts.TimeoutUp)
-		for {
+		err := poll.Within(10*time.Second, e.Opts.TimeoutUp).Until(ctx, func() (bool, error) {
 			st, err := e.PVEAll.ClusterStatus(ctx)
-			if err == nil && st.Quorate && len(st.Online) == len(st.Nodes) {
-				e.Log.Infof("all %d nodes online and quorate", len(st.Online))
-				break
+			if err != nil || !st.Quorate || len(st.Online) != len(st.Nodes) {
+				return false, nil
 			}
-			if time.Now().After(deadline) {
-				return fmt.Errorf("not every node came back within %s", e.Opts.TimeoutUp)
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(10 * time.Second):
-			}
+			e.Log.Infof("all %d nodes online and quorate", len(st.Online))
+			return true, nil
+		})
+		if errors.Is(err, poll.ErrTimeout) {
+			return fmt.Errorf("not every node came back within %s", e.Opts.TimeoutUp)
+		}
+		if err != nil {
+			return err
 		}
 	}
 
@@ -615,22 +614,18 @@ func runClusterStart(ctx context.Context) error {
 }
 
 func waitOSDs(ctx context.Context, e *plan.Env) error {
-	deadline := time.Now().Add(e.Opts.TimeoutUp)
-	for {
+	err := poll.Within(10*time.Second, e.Opts.TimeoutUp).Until(ctx, func() (bool, error) {
 		cs, err := e.PVE.CephStatus(ctx)
-		if err == nil && cs.OSDMap.NumUpOSDs == cs.OSDMap.NumOSDs && cs.OSDMap.NumInOSDs == cs.OSDMap.NumOSDs {
-			e.Log.Infof("%d/%d OSDs up and in", cs.OSDMap.NumUpOSDs, cs.OSDMap.NumOSDs)
-			return nil
+		if err != nil || cs.OSDMap.NumUpOSDs != cs.OSDMap.NumOSDs || cs.OSDMap.NumInOSDs != cs.OSDMap.NumOSDs {
+			return false, nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("OSDs did not all come back within %s", e.Opts.TimeoutUp)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(10 * time.Second):
-		}
+		e.Log.Infof("%d/%d OSDs up and in", cs.OSDMap.NumUpOSDs, cs.OSDMap.NumOSDs)
+		return true, nil
+	})
+	if errors.Is(err, poll.ErrTimeout) {
+		return fmt.Errorf("OSDs did not all come back within %s", e.Opts.TimeoutUp)
 	}
+	return err
 }
 
 func lockCluster(e *plan.Env, command string) (*state.Lock, bool, error) {

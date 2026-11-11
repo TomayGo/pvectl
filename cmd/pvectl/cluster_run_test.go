@@ -209,3 +209,22 @@ func TestStartClusterRefusesANodeWindow(t *testing.T) {
 		t.Errorf("writes %v", c.w.pve.Writes())
 	}
 }
+
+// Nodes that do not all come back stop `start cluster` before it thaws Ceph.
+func TestStartClusterGivesUpWaitingForNodes(t *testing.T) {
+	c := newCLI(t, newWorld(t))
+	c.w.healthy()
+	c.w.pve.JSON("GET", "/cluster/status", `[{"type":"cluster","name":"lab","nodes":3,"quorate":1},`+
+		`{"type":"node","name":"node-a","online":1},{"type":"node","name":"node-b","online":1},{"type":"node","name":"node-c","online":0}]`)
+	err := c.run("start", "cluster", "--yes", "--timeout-up=0s")
+	if err == nil || err.Error() != "not every node came back within 0s" {
+		t.Errorf("error %v", err)
+	}
+	if len(c.w.pve.Writes()) != 0 {
+		t.Errorf("writes %v", c.w.pve.Writes())
+	}
+	// As the code stands, the lock taken at the start stays held.
+	if !exists(t, c.stateDir, "maintenance.lock") {
+		t.Error("the lock was released")
+	}
+}
