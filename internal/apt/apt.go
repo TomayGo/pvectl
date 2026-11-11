@@ -7,14 +7,11 @@
 package apt
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
-	"io"
-	"os/exec"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	plog "github.com/TomayGo/pvectl/internal/log"
@@ -24,10 +21,16 @@ import (
 type Client struct {
 	log    *plog.Logger
 	dryRun bool
+	runner remote.Runner
 }
 
 func New(lg *plog.Logger, dryRun bool) *Client {
-	return &Client{log: lg, dryRun: dryRun}
+	return NewWithRunner(lg, dryRun, remote.Exec{})
+}
+
+// NewWithRunner is New with the thing that runs ssh replaced. For tests.
+func NewWithRunner(lg *plog.Logger, dryRun bool, r remote.Runner) *Client {
+	return &Client{log: lg, dryRun: dryRun, runner: r}
 }
 
 // noninteractive keeps dpkg from ever stopping to ask. confold keeps the local
@@ -54,38 +57,23 @@ type Host = remote.Host
 func (c *Client) run(ctx context.Context, h Host, script string) (stdout string, err error) {
 	ip := h.IP
 	c.log.Debugf("ssh root@%s (%s): %s", ip, h.Name, script)
-	cmd := exec.CommandContext(ctx, "ssh", append(remote.Args(h), script)...)
-	outPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", err
-	}
-	errPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return "", err
-	}
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("ssh %s: %w", ip, err)
-	}
-	var (
-		wg        sync.WaitGroup
-		out, serr strings.Builder
-	)
-	collect := func(r io.Reader, into *strings.Builder) {
-		defer wg.Done()
-		sc := bufio.NewScanner(r)
-		sc.Buffer(make([]byte, 64*1024), 1024*1024)
-		for sc.Scan() {
-			line := sc.Text()
+	var out, serr strings.Builder
+	collect := func(into *strings.Builder) *remote.LineWriter {
+		return &remote.LineWriter{Line: func(line string) {
 			into.WriteString(line)
 			into.WriteByte('\n')
 			c.log.Debugf("  %s", line)
-		}
+		}}
 	}
-	wg.Add(2)
-	go collect(outPipe, &out)
-	go collect(errPipe, &serr)
-	wg.Wait()
-	if err := cmd.Wait(); err != nil {
+	outW, errW := collect(&out), collect(&serr)
+	err = c.runner.Stream(ctx, outW, errW, "ssh", remote.SSHArgs(h, script)...)
+	outW.Flush()
+	errW.Flush()
+	var se *remote.StartError
+	if errors.As(err, &se) {
+		return "", fmt.Errorf("ssh %s: %w", ip, se.Err)
+	}
+	if err != nil {
 		return out.String(), fmt.Errorf("ssh root@%s %q: %w: %s", ip, firstWord(script), err, lastLines(serr.String(), 5))
 	}
 	return out.String(), nil
