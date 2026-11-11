@@ -13,13 +13,13 @@ import (
 	"github.com/TomayGo/pvectl/internal/plan"
 )
 
-func newConfigCmd() *cobra.Command {
+func (g *globals) newConfigCmd() *cobra.Command {
 	c := &cobra.Command{Use: "config", Short: "Generate, show and check the cluster definition"}
-	c.AddCommand(configDiscoverCmd(), configShowCmd(), configValidateCmd())
+	c.AddCommand(g.configDiscoverCmd(), g.configShowCmd(), g.configValidateCmd())
 	return c
 }
 
-func configShowCmd() *cobra.Command {
+func (g *globals) configShowCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "show",
 		Short: "Print the effective configuration after defaults",
@@ -39,7 +39,7 @@ func configShowCmd() *cobra.Command {
 	}
 }
 
-func configValidateCmd() *cobra.Command {
+func (g *globals) configValidateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "validate",
 		Short: "Check the config against the live cluster",
@@ -63,7 +63,7 @@ and that the Talos VM ids match.`),
 			}
 			fmt.Printf("  [ok]   %s is internally consistent\n", g.configPath)
 
-			e, lg, err := newEnv("")
+			e, lg, err := g.newEnv("")
 			if err != nil {
 				return err
 			}
@@ -126,7 +126,7 @@ func crossCheck(ctx context.Context, e *plan.Env) ([]string, error) {
 	return out, nil
 }
 
-func configDiscoverCmd() *cobra.Command {
+func (g *globals) configDiscoverCmd() *cobra.Command {
 	var write bool
 	c := &cobra.Command{
 		Use:   "discover",
@@ -141,7 +141,7 @@ guest, and which guests need starting again because they have no onboot flag.
 Existing values for those are carried over from the current config.`),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			e, lg, err := newEnv("")
+			e, lg, err := g.newEnv("")
 			if err != nil {
 				// Discovery must still work before a config exists.
 				return err

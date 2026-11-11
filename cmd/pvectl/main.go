@@ -28,6 +28,11 @@ import (
 
 var version = "dev"
 
+// globals is what one invocation of pvectl runs with: the values of the
+// global flags, and the few things a test replaces to keep a command away
+// from the real cluster. The command tree is built around one instance, and
+// every command reads it through its receiver -- there is no package-level
+// state.
 type globals struct {
 	configPath string
 	logDir     string
@@ -36,16 +41,16 @@ type globals struct {
 	// stateDir is where the lock, state.json and rolling.json live. There is
 	// no flag for it: it is state.Dir unless a test points it elsewhere.
 	stateDir string
+	// buildEnv wires up the clients a command works through. It is
+	// plan.NewEnv unless a test hands the command an Env made of fakes.
+	buildEnv func(cfg *config.Config, target string, lg *plog.Logger, opts plan.Options) (*plan.Env, error)
+	// ssh is what a rolling hand-off runs ssh through.
+	ssh remote.Runner
 }
 
-var g = globals{opts: plan.DefaultOptions(), stateDir: state.Dir}
-
-// buildEnv wires up the clients a command works through. It is plan.NewEnv
-// unless a test replaces it to hand the command an Env made of fakes.
-var buildEnv = plan.NewEnv
-
-// sshRunner is what a rolling hand-off runs ssh through; a test replaces it.
-var sshRunner remote.Runner = remote.Exec{}
+func newGlobals() *globals {
+	return &globals{opts: plan.DefaultOptions(), stateDir: state.Dir, buildEnv: plan.NewEnv, ssh: remote.Exec{}}
+}
 
 func main() {
 	root := newRoot()
@@ -59,7 +64,10 @@ func main() {
 	}
 }
 
-func newRoot() *cobra.Command {
+func newRoot() *cobra.Command { return newGlobals().root() }
+
+// root builds the command tree around g.
+func (g *globals) root() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "pvectl",
 		Short: "Graceful shutdown, reboot and recovery for the pve/ceph/talos cluster",
@@ -97,19 +105,19 @@ Every operation is the same list of steps executed by the same runner, so
 	pf.DurationVar(&g.opts.SilenceFor, "silence-for", g.opts.SilenceFor, "how long Alertmanager silences last")
 
 	root.AddCommand(
-		newPreflightCmd(),
-		newPlanCmd(),
-		newShutdownCmd(),
-		newRebootCmd(),
-		newUpgradeCmd(),
-		newStartCmd(),
-		newMaintCmd(),
-		newRollingCmd(),
-		newStatusCmd(),
-		newResumeCmd(),
-		newAbortCmd(),
-		newDoctorCmd(),
-		newConfigCmd(),
+		g.newPreflightCmd(),
+		g.newPlanCmd(),
+		g.newShutdownCmd(),
+		g.newRebootCmd(),
+		g.newUpgradeCmd(),
+		g.newStartCmd(),
+		g.newMaintCmd(),
+		g.newRollingCmd(),
+		g.newStatusCmd(),
+		g.newResumeCmd(),
+		g.newAbortCmd(),
+		g.newDoctorCmd(),
+		g.newConfigCmd(),
 	)
 
 	installCompletions(root)
@@ -119,7 +127,7 @@ Every operation is the same list of steps executed by the same runner, so
 // setup loads the config, opens the transcript and validates the skip list.
 // Every command starts here so that a typo in --skip-check fails before
 // anything is touched, rather than silently skipping nothing.
-func setup() (*config.Config, *plog.Logger, error) {
+func (g *globals) setup() (*config.Config, *plog.Logger, error) {
 	for _, s := range g.opts.SkipChecks {
 		if !plan.ValidCheckName(s) {
 			return nil, nil, fmt.Errorf("unknown check %q; valid names: %s", s, strings.Join(plan.CheckNames, ", "))
@@ -148,12 +156,12 @@ func setup() (*config.Config, *plog.Logger, error) {
 }
 
 // newEnv is the common path for commands that act on one node.
-func newEnv(target string) (*plan.Env, *plog.Logger, error) {
-	cfg, lg, err := setup()
+func (g *globals) newEnv(target string) (*plan.Env, *plog.Logger, error) {
+	cfg, lg, err := g.setup()
 	if err != nil {
 		return nil, nil, err
 	}
-	e, err := buildEnv(cfg, target, lg, g.opts)
+	e, err := g.buildEnv(cfg, target, lg, g.opts)
 	if err != nil {
 		lg.Close()
 		return nil, nil, err

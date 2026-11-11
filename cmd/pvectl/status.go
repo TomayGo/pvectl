@@ -15,13 +15,13 @@ import (
 	"github.com/TomayGo/pvectl/internal/state"
 )
 
-func newStatusCmd() *cobra.Command {
+func (g *globals) newStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show maintenance state, leftover flags, cordons and HA placement",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			e, lg, err := newEnv("")
+			e, lg, err := g.newEnv("")
 			if err != nil {
 				return err
 			}
@@ -205,7 +205,7 @@ func matcherSummary(ms []alert.Matcher) string {
 
 // ---------- resume / abort ----------
 
-func newResumeCmd() *cobra.Command {
+func (g *globals) newResumeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "resume",
 		Short: "Continue the interrupted run recorded in state.json",
@@ -221,7 +221,7 @@ func newResumeCmd() *cobra.Command {
 			if st.Finished {
 				return fmt.Errorf("the recorded %s %s run already finished", st.Command, st.Target)
 			}
-			e, lg, err := newEnv(st.Target)
+			e, lg, err := g.newEnv(st.Target)
 			if err != nil {
 				return err
 			}
@@ -252,7 +252,7 @@ func newResumeCmd() *cobra.Command {
 	}
 }
 
-func newAbortCmd() *cobra.Command {
+func (g *globals) newAbortCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "abort",
 		Short: "Roll back the interrupted run recorded in state.json",
@@ -275,7 +275,7 @@ with them.`),
 			if st == nil {
 				return fmt.Errorf("no run to abort")
 			}
-			e, lg, err := newEnv(st.Target)
+			e, lg, err := g.newEnv(st.Target)
 			if err != nil {
 				return err
 			}
@@ -317,14 +317,14 @@ with them.`),
 
 // ---------- doctor ----------
 
-func newDoctorCmd() *cobra.Command {
+func (g *globals) newDoctorCmd() *cobra.Command {
 	var fix bool
 	c := &cobra.Command{
 		Use:   "doctor",
 		Short: "Find and optionally clear leftovers from an interrupted maintenance",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			e, lg, err := newEnv("")
+			e, lg, err := g.newEnv("")
 			if err != nil {
 				return err
 			}
