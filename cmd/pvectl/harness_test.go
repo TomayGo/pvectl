@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -283,10 +284,13 @@ func newCLI(t *testing.T, w *world) *cli {
 	return c
 }
 
+// root builds the command tree the way main does.
+func (c *cli) root() *cobra.Command { return newRoot() }
+
 // run executes `pvectl <args>` in-process against the fake cluster.
 func (c *cli) run(args ...string) error {
 	c.t.Helper()
-	root := newRoot()
+	root := c.root()
 	root.SetArgs(append([]string{"--config", c.config, "--log-dir", c.logDir}, args...))
 	return root.ExecuteContext(context.Background())
 }
