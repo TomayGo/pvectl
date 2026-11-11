@@ -17,7 +17,7 @@ import (
 // latest-patch is relative to the oldest release running in the cluster, so a
 // half-finished earlier upgrade does not drag the target a minor ahead of the
 // nodes it has not reached.
-func resolveTalosAlias(ctx context.Context, cfg *config.Config, lg *plog.Logger) error {
+func (g *globals) resolveTalosAlias(ctx context.Context, cfg *config.Config, lg *plog.Logger) error {
 	alias := g.opts.TalosVersion
 	if !talos.IsAlias(alias) {
 		return nil

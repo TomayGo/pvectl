@@ -24,7 +24,7 @@ func TestNodeOpCmdAcceptsBothArgShapes(t *testing.T) {
 		{"enter", []string{"node", "pve-3"}},
 	}
 	for _, c := range cases {
-		cmd := nodeOpCmd(c.use, plan.CmdReboot, "test")
+		cmd := newGlobals().nodeOpCmd(c.use, plan.CmdReboot, "test")
 		if err := cmd.Args(cmd, c.args); err != nil {
 			t.Errorf("%s %v: %v", c.use, c.args, err)
 			continue
@@ -36,7 +36,7 @@ func TestNodeOpCmdAcceptsBothArgShapes(t *testing.T) {
 }
 
 func TestNodeOpCmdRejectsBadArgs(t *testing.T) {
-	cmd := nodeOpCmd("node", plan.CmdReboot, "test")
+	cmd := newGlobals().nodeOpCmd("node", plan.CmdReboot, "test")
 	if err := cmd.Args(cmd, nil); err == nil || !strings.Contains(err.Error(), "which node") {
 		t.Errorf("missing name gave %v", err)
 	}
@@ -137,25 +137,25 @@ func TestRollingUpgradeClosedOnlyByUpgrade(t *testing.T) {
 // Continuing a rolling upgrade without the flag inherits the recorded release;
 // naming a different one is refused rather than producing a mixed cluster.
 func TestAdoptRecordedTalosTarget(t *testing.T) {
-	defer func(o plan.Options) { g.opts = o }(g.opts)
+	g := newGlobals()
 	prog := &state.Rolling{Command: rollingUpgrade, TalosVersion: "v1.13.7"}
 
 	g.opts.TalosVersion, g.opts.TalosImage = "", ""
-	if err := adoptRecordedTalosTarget(prog); err != nil || g.opts.TalosVersion != "v1.13.7" {
+	if err := g.adoptRecordedTalosTarget(prog); err != nil || g.opts.TalosVersion != "v1.13.7" {
 		t.Fatalf("recorded version not inherited: %v %q", err, g.opts.TalosVersion)
 	}
 	g.opts.TalosVersion = "v1.14.0"
-	if err := adoptRecordedTalosTarget(prog); err == nil {
+	if err := g.adoptRecordedTalosTarget(prog); err == nil {
 		t.Fatal("a different release must be refused")
 	}
 	g.opts.TalosVersion = "latest"
-	if err := adoptRecordedTalosTarget(prog); err != nil || g.opts.TalosVersion != "v1.13.7" {
+	if err := g.adoptRecordedTalosTarget(prog); err != nil || g.opts.TalosVersion != "v1.13.7" {
 		t.Fatalf("an alias should join the recorded release: %v %q", err, g.opts.TalosVersion)
 	}
 	// The case that happened: a host-only run was recorded, then `latest` given.
 	hostOnly := &state.Rolling{Command: rollingUpgrade}
 	g.opts.TalosVersion = "latest"
-	if err := adoptRecordedTalosTarget(hostOnly); err == nil {
+	if err := g.adoptRecordedTalosTarget(hostOnly); err == nil {
 		t.Fatal("an alias must not silently continue a run recorded without a Talos target")
 	}
 }

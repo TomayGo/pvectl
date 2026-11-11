@@ -97,6 +97,8 @@ type handoffCtx struct {
 	command string // plan.CmdReboot or plan.CmdUpgrade
 	prog    *state.Rolling
 	self    string
+	// opts are the run's options as they stand when it reaches this node.
+	opts plan.Options
 	// stateDir is where rolling.json lives, here and -- pmxcfs being
 	// cluster-wide -- on the peer.
 	stateDir string
@@ -129,7 +131,7 @@ func (h *handoffCtx) probe(ctx context.Context, peer, exe string) error {
 	if strings.Contains(rest, "no-systemd-run") {
 		return errors.New("systemd-run not found")
 	}
-	if !g.opts.DryRun && !strings.Contains(rest, "progress-ok") {
+	if !h.opts.DryRun && !strings.Contains(rest, "progress-ok") {
 		return errors.New("does not see the recorded progress in " + h.stateDir)
 	}
 	return nil
@@ -146,7 +148,7 @@ func (h *handoffCtx) handOff(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("locate own binary: %w", err)
 	}
-	if !g.opts.DryRun {
+	if !h.opts.DryRun {
 		// Warn-only elsewhere; here the peer depends on it.
 		if err := h.prog.Save(h.stateDir); err != nil {
 			return fmt.Errorf("record progress before hand-off: %w", err)
@@ -175,13 +177,13 @@ func (h *handoffCtx) handOff(ctx context.Context) error {
 	start := remote.Quote(append([]string{"systemd-run", "--quiet", "--collect", "--uid=root", "--unit=" + unit,
 		fmt.Sprintf("--description=pvectl %s (handed off from %s)", rollingWhat(kind), h.self), "--"}, argv...)...)
 	ip := h.cfg.Nodes[peer].LANIP
-	if g.opts.DryRun {
+	if h.opts.DryRun {
 		h.lg.Plain("(dry-run) would continue on %s:", peer)
 		h.lg.Plain("    ssh %s %s", ip, start)
 		return nil
 	}
 
-	env := &plan.Env{Opts: g.opts}
+	env := &plan.Env{Opts: h.opts}
 	if err := env.Confirm(ctx, fmt.Sprintf("About to hand the %s over to %s, which will %s %s (this node) unattended.",
 		rollingWhat(kind), peer, h.command, h.self)); err != nil {
 		h.printManual()
