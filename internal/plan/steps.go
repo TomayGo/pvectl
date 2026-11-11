@@ -2,12 +2,14 @@ package plan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/TomayGo/pvectl/internal/alert"
+	"github.com/TomayGo/pvectl/internal/poll"
 	"github.com/TomayGo/pvectl/internal/pve"
 	"github.com/TomayGo/pvectl/internal/wol"
 )
@@ -304,48 +306,53 @@ func evacuateHA(ctx context.Context, e *Env) error {
 // shutdown_policy, is what gives the operation a progress report and a
 // timeout.
 func waitHAEvacuated(ctx context.Context, e *Env, timeout time.Duration, moved []string) error {
-	deadline := time.Now().Add(timeout)
-	for {
-		ms, err := e.PVE.HAManagerStatus(ctx)
-		if err != nil {
-			return err
-		}
-		left := ms.ActiveServicesOn(e.Target)
-		state := ms.NodeState(e.Target)
-		if state == "maintenance" && len(left) == 0 {
-			e.Log.Infof("%s is in HA maintenance; no active HA resources remain on it", e.Target)
-			for _, s := range ms.Services() {
-				if contains(moved, s.SID) {
-					e.Log.Infof("  %s is on %s (%s)", s.SID, s.Node, s.State)
-				}
-			}
-			return nil
-		}
-		if time.Now().After(deadline) {
-			var names []string
-			for _, s := range left {
-				d := fmt.Sprintf("%s (%s)", s.SID, s.State)
-				if s.Target != "" && s.Target != s.Node {
-					d = fmt.Sprintf("%s (%s %s -> %s)", s.SID, s.State, s.Node, s.Target)
-				}
-				names = append(names, d)
-			}
-			detail := "none"
-			if len(names) > 0 {
-				detail = strings.Join(names, ", ")
-			}
-			return fmt.Errorf("after %s %s is in HA state %q (maintenance requested: %v), active resources still on it: %s"+
-				" -- a strict node-affinity rule with no other available node keeps a resource in place (see the ha-affinity preflight check);"+
-				" `pvectl resume` keeps waiting, `pvectl abort` ends the maintenance",
-				timeout, e.Target, state, ms.MaintenanceRequested(e.Target), detail)
-		}
+	// What the last poll saw, for the progress line and the timeout message.
+	var (
+		ms    *pve.HAManagerStatus
+		left  []pve.HAService
+		state string
+	)
+	wait := poll.Within(5*time.Second, timeout)
+	wait.BeforeSleep = func() {
 		e.Log.Debugf("waiting for HA: %s is %q, %d active resource(s) left", e.Target, state, len(left))
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
-		}
 	}
+	err := wait.Until(ctx, func() (bool, error) {
+		var err error
+		if ms, err = e.PVE.HAManagerStatus(ctx); err != nil {
+			return false, err
+		}
+		left = ms.ActiveServicesOn(e.Target)
+		state = ms.NodeState(e.Target)
+		if state != "maintenance" || len(left) > 0 {
+			return false, nil
+		}
+		e.Log.Infof("%s is in HA maintenance; no active HA resources remain on it", e.Target)
+		for _, s := range ms.Services() {
+			if contains(moved, s.SID) {
+				e.Log.Infof("  %s is on %s (%s)", s.SID, s.Node, s.State)
+			}
+		}
+		return true, nil
+	})
+	if !errors.Is(err, poll.ErrTimeout) {
+		return err
+	}
+	var names []string
+	for _, s := range left {
+		d := fmt.Sprintf("%s (%s)", s.SID, s.State)
+		if s.Target != "" && s.Target != s.Node {
+			d = fmt.Sprintf("%s (%s %s -> %s)", s.SID, s.State, s.Node, s.Target)
+		}
+		names = append(names, d)
+	}
+	detail := "none"
+	if len(names) > 0 {
+		detail = strings.Join(names, ", ")
+	}
+	return fmt.Errorf("after %s %s is in HA state %q (maintenance requested: %v), active resources still on it: %s"+
+		" -- a strict node-affinity rule with no other available node keeps a resource in place (see the ha-affinity preflight check);"+
+		" `pvectl resume` keeps waiting, `pvectl abort` ends the maintenance",
+		timeout, e.Target, state, ms.MaintenanceRequested(e.Target), detail)
 }
 
 // leaveHAMaintenance ends the node's HA maintenance if this window started it,
@@ -360,27 +367,25 @@ func leaveHAMaintenance(ctx context.Context, e *Env) error {
 		return err
 	}
 	if !e.Opts.DryRun {
-		deadline := time.Now().Add(haAckTimeout)
-		for {
+		err := poll.Within(5*time.Second, haAckTimeout).Until(ctx, func() (bool, error) {
 			ms, err := e.PVE.HAManagerStatus(ctx)
 			if err != nil {
-				return err
+				return false, err
 			}
-			if !ms.MaintenanceRequested(e.Target) {
-				e.Log.Infof("HA maintenance ended on %s (CRM state %q)", e.Target, ms.NodeState(e.Target))
-				if back := ms.ReturningTo(e.Target); len(back) > 0 {
-					e.Log.Infof("HA moves %s back to %s", strings.Join(back, ", "), e.Target)
-				}
-				break
+			if ms.MaintenanceRequested(e.Target) {
+				return false, nil
 			}
-			if time.Now().After(deadline) {
-				return fmt.Errorf("the CRM has not taken the request to end maintenance on %s after %s; check `ha-manager status`", e.Target, haAckTimeout)
+			e.Log.Infof("HA maintenance ended on %s (CRM state %q)", e.Target, ms.NodeState(e.Target))
+			if back := ms.ReturningTo(e.Target); len(back) > 0 {
+				e.Log.Infof("HA moves %s back to %s", strings.Join(back, ", "), e.Target)
 			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(5 * time.Second):
-			}
+			return true, nil
+		})
+		if errors.Is(err, poll.ErrTimeout) {
+			return fmt.Errorf("the CRM has not taken the request to end maintenance on %s after %s; check `ha-manager status`", e.Target, haAckTimeout)
+		}
+		if err != nil {
+			return err
 		}
 	}
 	e.State.SetData(haStep, haOwnedKey, false)
@@ -615,14 +620,13 @@ func stepWaitDown(powerStep string) Step {
 			if v, ok := dataOf(e, powerStep, "uptime_before").(float64); ok {
 				before = int64(v)
 			}
-			deadline := time.Now().Add(e.Opts.TimeoutDown)
 			unreachable := 0
 			const unreachableProbes = 3
-			for {
+			err := poll.Within(5*time.Second, e.Opts.TimeoutDown).Until(ctx, func() (bool, error) {
 				if st, err := e.PVE.ClusterStatus(ctx); err == nil {
 					if n, ok := st.Nodes[e.Target]; ok && n.Online != 1 {
 						e.Log.Infof("%s is offline", e.Target)
-						return nil
+						return true, nil
 					}
 				} else {
 					e.Log.Debugf("cluster status unavailable while waiting: %v", err)
@@ -632,7 +636,7 @@ func stepWaitDown(powerStep string) Step {
 					if before > 0 {
 						if ns, err := e.PVE.NodeStatus(ctx, e.Target); err == nil && ns.Uptime < before {
 							e.Log.Infof("%s has already rebooted (uptime %ds, was %ds)", e.Target, ns.Uptime, before)
-							return nil
+							return true, nil
 						}
 					}
 				} else {
@@ -640,18 +644,15 @@ func stepWaitDown(powerStep string) Step {
 					e.Log.Debugf("%s did not answer on %s (%d/%d)", e.Target, e.Node.LANIP, unreachable, unreachableProbes)
 					if unreachable >= unreachableProbes {
 						e.Log.Infof("%s stopped answering on %s", e.Target, e.Node.LANIP)
-						return nil
+						return true, nil
 					}
 				}
-				if time.Now().After(deadline) {
-					return fmt.Errorf("%s still online after %s", e.Target, e.Opts.TimeoutDown)
-				}
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(5 * time.Second):
-				}
+				return false, nil
+			})
+			if errors.Is(err, poll.ErrTimeout) {
+				return fmt.Errorf("%s still online after %s", e.Target, e.Opts.TimeoutDown)
 			}
+			return err
 		},
 	}
 }
@@ -729,23 +730,25 @@ func stepWaitUp() Step {
 	}
 }
 
+// waitFor polls probe every 10 s until it reports ready or the deadline has
+// passed. The deadline is shared by the caller's successive waits, which is
+// why it is a point in time and not a timeout.
 func waitFor(ctx context.Context, e *Env, deadline time.Time, what string, probe func() (bool, string)) error {
-	for {
-		ok, detail := probe()
-		if ok {
-			e.Log.Infof("%s: ready", what)
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for %s (%s)", what, detail)
-		}
+	var detail string
+	wait := poll.Loop{Every: 10 * time.Second, Deadline: deadline, BeforeSleep: func() {
 		e.Log.Debugf("waiting for %s: %s", what, detail)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(10 * time.Second):
+	}}
+	err := wait.Until(ctx, func() (bool, error) {
+		var ok bool
+		if ok, detail = probe(); ok {
+			e.Log.Infof("%s: ready", what)
 		}
+		return ok, nil
+	})
+	if errors.Is(err, poll.ErrTimeout) {
+		return fmt.Errorf("timed out waiting for %s (%s)", what, detail)
 	}
+	return err
 }
 
 // ---------- 13. restore ----------

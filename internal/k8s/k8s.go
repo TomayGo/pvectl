@@ -9,6 +9,7 @@ package k8s
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -26,6 +27,7 @@ import (
 	"k8s.io/kubectl/pkg/drain"
 
 	plog "github.com/TomayGo/pvectl/internal/log"
+	"github.com/TomayGo/pvectl/internal/poll"
 )
 
 type Client struct {
@@ -436,33 +438,26 @@ func (c *Client) WaitReady(ctx context.Context, name string, timeout time.Durati
 	if err != nil {
 		return err
 	}
-	deadline := time.Now().Add(timeout)
 	var last string
-	for {
+	err = poll.Within(5*time.Second, timeout).Until(ctx, func() (bool, error) {
 		n, err := cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
-		if err == nil {
-			ready := false
-			for _, cond := range n.Status.Conditions {
-				if cond.Type == corev1.NodeReady {
-					ready = cond.Status == corev1.ConditionTrue
-					last = string(cond.Status) + "/" + cond.Reason
-				}
-			}
-			if ready {
-				return nil
-			}
-		} else {
+		if err != nil {
 			last = err.Error()
+			return false, nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("node %s not Ready after %s (last: %s)", name, timeout, last)
+		ready := false
+		for _, cond := range n.Status.Conditions {
+			if cond.Type == corev1.NodeReady {
+				ready = cond.Status == corev1.ConditionTrue
+				last = string(cond.Status) + "/" + cond.Reason
+			}
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
-		}
+		return ready, nil
+	})
+	if errors.Is(err, poll.ErrTimeout) {
+		return fmt.Errorf("node %s not Ready after %s (last: %s)", name, timeout, last)
 	}
+	return err
 }
 
 // AllReady reports whether every node is Ready, and names those that are not.
