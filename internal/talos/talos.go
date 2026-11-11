@@ -21,6 +21,7 @@ import (
 	configres "github.com/siderolabs/talos/pkg/machinery/resources/config"
 
 	plog "github.com/TomayGo/pvectl/internal/log"
+	"github.com/TomayGo/pvectl/internal/poll"
 )
 
 type Client struct {
@@ -116,48 +117,34 @@ func (c *Client) WaitDown(ctx context.Context, ip string, timeout time.Duration)
 	if c.dryRun {
 		return nil
 	}
-	deadline := time.Now().Add(timeout)
-	for {
+	err := poll.Within(5*time.Second, timeout).Until(ctx, func() (bool, error) {
 		alive, err := c.alive(ctx, ip)
 		if err != nil {
-			return fmt.Errorf("cannot tell whether %s is down: %w", ip, err)
+			return false, fmt.Errorf("cannot tell whether %s is down: %w", ip, err)
 		}
-		if !alive {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("talos node %s still responding after %s", ip, timeout)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
-		}
+		return !alive, nil
+	})
+	if errors.Is(err, poll.ErrTimeout) {
+		return fmt.Errorf("talos node %s still responding after %s", ip, timeout)
 	}
+	return err
 }
 
 func (c *Client) WaitUp(ctx context.Context, ip string, timeout time.Duration) error {
 	if c.dryRun {
 		return nil
 	}
-	deadline := time.Now().Add(timeout)
-	for {
+	err := poll.Within(5*time.Second, timeout).Until(ctx, func() (bool, error) {
 		alive, err := c.alive(ctx, ip)
 		if err != nil {
-			return fmt.Errorf("cannot reach %s: %w", ip, err)
+			return false, fmt.Errorf("cannot reach %s: %w", ip, err)
 		}
-		if alive {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("talos node %s not answering after %s", ip, timeout)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
-		}
+		return alive, nil
+	})
+	if errors.Is(err, poll.ErrTimeout) {
+		return fmt.Errorf("talos node %s not answering after %s", ip, timeout)
 	}
+	return err
 }
 
 type EtcdHealth struct {
