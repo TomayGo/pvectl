@@ -11,7 +11,6 @@ import (
 
 	"github.com/TomayGo/pvectl/internal/alert"
 	"github.com/TomayGo/pvectl/internal/plan"
-	"github.com/TomayGo/pvectl/internal/remote"
 	"github.com/TomayGo/pvectl/internal/state"
 	"github.com/TomayGo/pvectl/internal/talos"
 	"github.com/TomayGo/pvectl/internal/wol"
@@ -191,7 +190,7 @@ func runRolling(cmd *cobra.Command, command string) error {
 	for _, node := range remaining {
 		if node == self {
 			h := &handoffCtx{cfg: cfg, lg: lg, fs: cmd.Flags(), command: command, prog: prog, self: self,
-				stateDir: dir, run: remote.Exec{}}
+				stateDir: dir, run: sshRunner}
 			if noHandoff {
 				saveProgress(prog)
 				lg.Plain("")
