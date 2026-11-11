@@ -246,10 +246,12 @@ func (w *world) healthy() {
 
 // ---------- commands run through newRoot ----------
 
-// cli is the process-wide state a command line touches, pointed at temporary
-// directories and at a fake cluster for one test.
+// cli is one pvectl invocation's globals, pointed at temporary directories
+// and at a fake cluster. Successive runs share it, as successive commands
+// share /etc/pve.
 type cli struct {
 	t        *testing.T
+	g        *globals
 	w        *world
 	config   string
 	logDir   string
@@ -266,15 +268,12 @@ type builtEnv struct {
 	opts   plan.Options
 }
 
-// newCLI replaces the globals for the duration of the test.
 func newCLI(t *testing.T, w *world) *cli {
 	t.Helper()
-	c := &cli{t: t, w: w, config: writeFixtureConfig(t), logDir: t.TempDir(), stateDir: t.TempDir()}
-	savedG, savedBuild, savedSSH := g, buildEnv, sshRunner
-	t.Cleanup(func() { g, buildEnv, sshRunner = savedG, savedBuild, savedSSH })
-	g = globals{opts: plan.DefaultOptions(), stateDir: c.stateDir}
-	sshRunner = w.cmd
-	buildEnv = func(cfg *config.Config, target string, lg *plog.Logger, opts plan.Options) (*plan.Env, error) {
+	c := &cli{t: t, g: newGlobals(), w: w, config: writeFixtureConfig(t), logDir: t.TempDir(), stateDir: t.TempDir()}
+	c.g.stateDir = c.stateDir
+	c.g.ssh = w.cmd
+	c.g.buildEnv = func(cfg *config.Config, target string, lg *plog.Logger, opts plan.Options) (*plan.Env, error) {
 		c.built = append(c.built, builtEnv{target, opts})
 		if c.refuse != nil {
 			return nil, c.refuse
@@ -284,8 +283,8 @@ func newCLI(t *testing.T, w *world) *cli {
 	return c
 }
 
-// root builds the command tree the way main does.
-func (c *cli) root() *cobra.Command { return newRoot() }
+// root builds the command tree the way main does, around this test's globals.
+func (c *cli) root() *cobra.Command { return c.g.root() }
 
 // run executes `pvectl <args>` in-process against the fake cluster.
 func (c *cli) run(args ...string) error {

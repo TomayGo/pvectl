@@ -13,7 +13,7 @@ import (
 	"github.com/TomayGo/pvectl/internal/state"
 )
 
-func newPreflightCmd() *cobra.Command {
+func (g *globals) newPreflightCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "preflight [node]",
 		Short: "Run the safety checks and stop (changes nothing)",
@@ -23,13 +23,13 @@ runs the node-specific ones: drain preview, HA capacity on the remaining nodes,
 running backups, passthrough guests and whether your own connection depends on
 the node you are asking about.`),
 		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: completeNodeOptional,
+		ValidArgsFunction: g.completeNodeOptional,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := ""
 			if len(args) == 1 {
 				target = args[0]
 			}
-			e, lg, err := newEnv(target)
+			e, lg, err := g.newEnv(target)
 			if err != nil {
 				return err
 			}
@@ -53,7 +53,7 @@ the node you are asking about.`),
 
 // newPlanCmd mirrors the mutating commands but forces --dry-run, so that
 // `plan` and the real thing cannot describe different sequences.
-func newPlanCmd() *cobra.Command {
+func (g *globals) newPlanCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "plan",
 		Short: "Show the plan and its impact without changing anything",
@@ -62,34 +62,34 @@ func newPlanCmd() *cobra.Command {
 		},
 	}
 	c.AddCommand(
-		nodeOpCmd("shutdown", plan.CmdShutdown, "Plan a node shutdown"),
-		nodeOpCmd("reboot", plan.CmdReboot, "Plan a node reboot"),
-		nodeOpCmd("start", plan.CmdStart, "Plan a node start"),
-		withTalosFlags(nodeOpCmd("upgrade", plan.CmdUpgrade, "Plan a node upgrade")),
+		g.nodeOpCmd("shutdown", plan.CmdShutdown, "Plan a node shutdown"),
+		g.nodeOpCmd("reboot", plan.CmdReboot, "Plan a node reboot"),
+		g.nodeOpCmd("start", plan.CmdStart, "Plan a node start"),
+		g.withTalosFlags(g.nodeOpCmd("upgrade", plan.CmdUpgrade, "Plan a node upgrade")),
 	)
 	maint := &cobra.Command{Use: "maint", Short: "Plan entering or leaving maintenance"}
 	maint.AddCommand(
-		nodeOpCmd("enter", plan.CmdMaintEnter, "Plan entering maintenance"),
-		nodeOpCmd("exit", plan.CmdMaintExit, "Plan leaving maintenance"),
+		g.nodeOpCmd("enter", plan.CmdMaintEnter, "Plan entering maintenance"),
+		g.nodeOpCmd("exit", plan.CmdMaintExit, "Plan leaving maintenance"),
 	)
 	c.AddCommand(maint)
 	return c
 }
 
-func newShutdownCmd() *cobra.Command {
+func (g *globals) newShutdownCmd() *cobra.Command {
 	c := &cobra.Command{Use: "shutdown", Short: "Shut down a node or the whole cluster"}
-	c.AddCommand(nodeOpCmd("node", plan.CmdShutdown, "Shut down one node gracefully"))
-	c.AddCommand(shutdownClusterCmd())
+	c.AddCommand(g.nodeOpCmd("node", plan.CmdShutdown, "Shut down one node gracefully"))
+	c.AddCommand(g.shutdownClusterCmd())
 	return c
 }
 
-func newRebootCmd() *cobra.Command {
+func (g *globals) newRebootCmd() *cobra.Command {
 	c := &cobra.Command{Use: "reboot", Short: "Reboot a node and put it back in service"}
-	c.AddCommand(nodeOpCmd("node", plan.CmdReboot, "Reboot one node and restore it"))
+	c.AddCommand(g.nodeOpCmd("node", plan.CmdReboot, "Reboot one node and restore it"))
 	return c
 }
 
-func newUpgradeCmd() *cobra.Command {
+func (g *globals) newUpgradeCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Upgrade a node's packages (and optionally Talos), then reboot it",
@@ -102,13 +102,13 @@ itself; the host reboot that follows boots both, so the node goes down once.
 The run refuses a full-upgrade that would remove packages or change the major
 version of Ceph or pve-manager: those need a human and their own procedure.`),
 	}
-	c.AddCommand(withTalosFlags(nodeOpCmd("node", plan.CmdUpgrade, "Upgrade one node and reboot it")))
+	c.AddCommand(g.withTalosFlags(g.nodeOpCmd("node", plan.CmdUpgrade, "Upgrade one node and reboot it")))
 	return c
 }
 
 // withTalosFlags binds the Talos target flags straight into the global
 // options, which is where plan.NewRunner reads them from.
-func withTalosFlags(c *cobra.Command) *cobra.Command {
+func (g *globals) withTalosFlags(c *cobra.Command) *cobra.Command {
 	c.Flags().StringVar(&g.opts.TalosVersion, "talos-version", "",
 		"also upgrade Talos to this release (v1.13.7, latest, or latest-patch), keeping the node's Image Factory schematic")
 	c.Flags().StringVar(&g.opts.TalosImage, "talos-image", "",
@@ -116,14 +116,14 @@ func withTalosFlags(c *cobra.Command) *cobra.Command {
 	return c
 }
 
-func newStartCmd() *cobra.Command {
+func (g *globals) newStartCmd() *cobra.Command {
 	c := &cobra.Command{Use: "start", Short: "Wake a node or the whole cluster"}
-	c.AddCommand(nodeOpCmd("node", plan.CmdStart, "Wake one node and take it out of maintenance"))
-	c.AddCommand(startClusterCmd())
+	c.AddCommand(g.nodeOpCmd("node", plan.CmdStart, "Wake one node and take it out of maintenance"))
+	c.AddCommand(g.startClusterCmd())
 	return c
 }
 
-func newMaintCmd() *cobra.Command {
+func (g *globals) newMaintCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "maint",
 		Short: "Enter or leave maintenance without stopping the host",
@@ -132,8 +132,8 @@ maint enter does everything a shutdown does except the poweroff: ceph flags,
 HA evacuation and the kubernetes drain. Use it for physical work on a machine
 that stays powered, and maint exit to put it back.`),
 	}
-	c.AddCommand(nodeOpCmd("enter", plan.CmdMaintEnter, "Put a node into maintenance without stopping it"))
-	c.AddCommand(nodeOpCmd("exit", plan.CmdMaintExit, "Take a node out of maintenance"))
+	c.AddCommand(g.nodeOpCmd("enter", plan.CmdMaintEnter, "Put a node into maintenance without stopping it"))
+	c.AddCommand(g.nodeOpCmd("exit", plan.CmdMaintExit, "Take a node out of maintenance"))
 	return c
 }
 
@@ -141,7 +141,7 @@ that stays powered, and maint exit to put it back.`),
 // depths -- `pvectl reboot node pve-3` names it "node", while
 // `pvectl plan reboot node pve-3` names it "reboot" and leaves "node" in the
 // arguments -- so it accepts either shape and takes the node name from the end.
-func nodeOpCmd(use, command, short string) *cobra.Command {
+func (g *globals) nodeOpCmd(use, command, short string) *cobra.Command {
 	usage := use + " <name>"
 	if use != "node" {
 		usage = use + " node <name>"
@@ -149,7 +149,7 @@ func nodeOpCmd(use, command, short string) *cobra.Command {
 	return &cobra.Command{
 		Use:               usage,
 		Short:             short,
-		ValidArgsFunction: completeNodeOp(use),
+		ValidArgsFunction: g.completeNodeOp(use),
 		Args: func(cmd *cobra.Command, args []string) error {
 			switch {
 			case len(args) == 0:
@@ -162,22 +162,22 @@ func nodeOpCmd(use, command, short string) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runNodeOp(cmd.Context(), args[len(args)-1], command, false)
+			return g.runNodeOp(cmd.Context(), args[len(args)-1], command, false)
 		},
 	}
 }
 
 // fromRolling says the call comes from `rolling reboot`, which keeps its own
 // progress record; a standalone reboot has to update that record itself.
-func runNodeOp(ctx context.Context, target, command string, fromRolling bool) error {
-	e, lg, err := newEnv(target)
+func (g *globals) runNodeOp(ctx context.Context, target, command string, fromRolling bool) error {
+	e, lg, err := g.newEnv(target)
 	if err != nil {
 		return err
 	}
 	defer lg.Close()
 	if command == plan.CmdUpgrade {
 		// A no-op inside a rolling upgrade, which resolved it already.
-		if err := resolveTalosAlias(ctx, e.Cfg, lg); err != nil {
+		if err := g.resolveTalosAlias(ctx, e.Cfg, lg); err != nil {
 			return err
 		}
 		e.Opts.TalosVersion = g.opts.TalosVersion
