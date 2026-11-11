@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	plog "github.com/TomayGo/pvectl/internal/log"
+	"github.com/TomayGo/pvectl/internal/remote/remotetest"
 )
 
 // Shaped like GET /cluster/ha/status/manager_status on PVE 9.2 while pve-1 is
@@ -207,17 +208,13 @@ func TestNodeMaintenanceArgs(t *testing.T) {
 }
 
 func TestSetHANodeMaintenance(t *testing.T) {
-	saved := runHAManager
-	defer func() { runHAManager = saved }()
-	var calls [][]string
-	runHAManager = func(ctx context.Context, args ...string) ([]byte, error) {
-		calls = append(calls, args)
-		return []byte("node 'pve-9' does not exist\n"), errors.New("exit status 255")
-	}
+	run := &remotetest.Fake{Answer: func(remotetest.Call) remotetest.Result {
+		return remotetest.Result{Stdout: "node 'pve-9' does not exist\n", Err: errors.New("exit status 255")}
+	}}
 
-	c := &Client{log: plog.Discard(), DryRun: true}
-	if err := c.SetHANodeMaintenance(context.Background(), "pve-1", true); err != nil || len(calls) != 0 {
-		t.Fatalf("dry-run must not run ha-manager: err=%v calls=%v", err, calls)
+	c := &Client{log: plog.Discard(), DryRun: true, runner: run}
+	if err := c.SetHANodeMaintenance(context.Background(), "pve-1", true); err != nil || len(run.Calls()) != 0 {
+		t.Fatalf("dry-run must not run ha-manager: err=%v calls=%v", err, run.Calls())
 	}
 
 	c.DryRun = false
@@ -225,7 +222,11 @@ func TestSetHANodeMaintenance(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("ha-manager's own message must reach the error: %v", err)
 	}
-	if len(calls) != 1 || calls[0][3] != "pve-9" {
+	if want := "ha-manager crm-command node-maintenance enable pve-9: exit status 255: node 'pve-9' does not exist"; err.Error() != want {
+		t.Errorf("error %q, want %q", err, want)
+	}
+	calls := run.Calls()
+	if len(calls) != 1 || calls[0].Line() != "ha-manager crm-command node-maintenance enable pve-9" {
 		t.Fatalf("calls: %v", calls)
 	}
 }
